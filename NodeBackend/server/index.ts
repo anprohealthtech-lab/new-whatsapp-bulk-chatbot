@@ -1,4 +1,5 @@
-import express, { type Request, Response, NextFunction } from "express";
+import express from "express";
+import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils";
 
@@ -6,15 +7,15 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   const path = req.path;
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
+  res.json = function (bodyJson: any) {
     capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
+    return originalResJson.call(res, bodyJson);
   };
 
   res.on("finish", () => {
@@ -48,20 +49,51 @@ app.use((req, res, next) => {
       log(`Error: ${message}`);
     });
 
-    // importantly only setup vite in development and after
-    // setting up all the other routes so the catch-all route
-    // doesn't interfere with the other routes
-    if (process.env.NODE_ENV === "development" && process.env.npm_lifecycle_event !== "build") {
+    // API-first mode - serve minimal UI only in development
+    if (process.env.NODE_ENV === "development" && process.env.SERVE_UI === "true") {
       try {
         // Dynamic import to avoid loading Vite/Rollup in production
         const { setupVite } = await import("./vite-dev");
         await setupVite(app, server);
       } catch (error) {
-        log("Vite setup not available in production build, serving static files");
-        serveStatic(app);
+        log("Vite setup not available, running in API-only mode");
       }
     } else {
-      serveStatic(app);
+      // Production API-only mode
+      app.get('/', (req: Request, res: Response) => {
+        res.json({
+          name: "WhatsApp LIMS API",
+          version: "1.0.0",
+          description: "Multi-User WhatsApp LIMS Backend Service",
+          status: "running",
+          endpoints: {
+            health: "/api/external/health",
+            docs: "/api/external/docs",
+            sessions: "/api/external/sessions/*",
+            messages: "/api/external/messages/*"
+          },
+          timestamp: new Date().toISOString()
+        });
+      });
+      
+      // API Documentation endpoint
+      app.get('/api/external/docs', (req: Request, res: Response) => {
+        res.json({
+          name: "WhatsApp LIMS External API",
+          version: "1.0.0",
+          documentation: "See EXTERNAL_API_DOCUMENTATION.md for full API documentation",
+          endpoints: {
+            "POST /api/external/sessions/create": "Create new WhatsApp session",
+            "GET /api/external/sessions/:id/status": "Get session status",
+            "GET /api/external/sessions/:id/qr": "Get QR code",
+            "DELETE /api/external/sessions/:id": "Disconnect session",
+            "POST /api/external/messages/send": "Send text message", 
+            "POST /api/external/reports/send": "Send report with file",
+            "GET /api/external/health": "System health check"
+          },
+          authentication: "X-API-Key header required"
+        });
+      });
     }
 
     // ALWAYS serve the app on the port specified in the environment variable PORT

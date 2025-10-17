@@ -9,6 +9,7 @@ import { messageService } from "./services/MessageService";
 import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
 import { sendMessageSchema, sendReportSchema } from "@shared/schema";
+import { externalApiRoutes } from "./api-routes";
 import { log } from "./utils";
 
 // Configure CORS
@@ -423,6 +424,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
   });
+
+  // External API routes for integration with other apps
+  app.use('/api', externalApiRoutes);
 
   // Cleanup old files periodically
   setInterval(async () => {
