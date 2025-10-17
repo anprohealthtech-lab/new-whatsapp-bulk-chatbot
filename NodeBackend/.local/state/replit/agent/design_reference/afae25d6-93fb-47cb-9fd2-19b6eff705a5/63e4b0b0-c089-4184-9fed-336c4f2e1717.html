@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp LIMS Integration System - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'inter': ['Inter', 'sans-serif'],
+                        'mono': ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        'primary': '#1976D2',
+                        'secondary': '#388E3C',
+                        'warning': '#FFA726',
+                        'error': '#D32F2F',
+                        'whatsapp': '#25D366',
+                    }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="bg-gray-50 font-inter">
+    <!-- @COMPONENT: AppLayout -->
+    <div class="flex h-screen bg-gray-50">
+        <!-- @COMPONENT: Sidebar -->
+        <div class="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
+            <!-- Logo Header -->
+            <div class="p-6 border-b border-gray-200">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
+                        <i class="fab fa-whatsapp text-white text-xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-lg font-semibold text-gray-900">LIMS Integration</h1>
+                        <p class="text-sm text-gray-500">WhatsApp System</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Navigation Menu -->
+            <nav class="flex-1 px-4 py-6 space-y-2">
+                <a href="#" class="flex items-center px-4 py-3 text-primary bg-blue-50 border-r-2 border-primary rounded-lg font-medium">
+                    <i class="fas fa-tachometer-alt w-5 mr-3"></i>
+                    Dashboard
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-600 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors">
+                    <i class="fas fa-comments w-5 mr-3"></i>
+                    Messages
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-600 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors">
+                    <i class="fas fa-file-upload w-5 mr-3"></i>
+                    Send Reports
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-600 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors">
+                    <i class="fas fa-history w-5 mr-3"></i>
+                    Message History
+                </a>
+                <a href="#" class="flex items-center px-4 py-3 text-gray-600 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors">
+                    <i class="fas fa-cog w-5 mr-3"></i>
+                    Settings
+                </a>
+            </nav>
+
+            <!-- Footer -->
+            <div class="p-4 border-t border-gray-200">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
+                        <i class="fas fa-user text-gray-600 text-sm"></i>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-900" data-bind="user.name" data-mock="true">Lab Admin</p>
+                        <p class="text-xs text-gray-500" data-bind="user.role" data-mock="true">System Administrator</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- @END_COMPONENT: Sidebar -->
+
+        <!-- @COMPONENT: MainContent -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+            <!-- @COMPONENT: Header -->
+            <header class="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-900">Dashboard</h2>
+                        <p class="text-gray-600">WhatsApp LIMS Integration System</p>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <!-- @STATE: notifications:array = [] -->
+                        <button class="relative p-2 text-gray-400 hover:text-gray-600 transition-colors" data-event="click:toggleNotifications">
+                            <i class="fas fa-bell text-xl"></i>
+                            <span class="absolute -top-1 -right-1 w-3 h-3 bg-error rounded-full" data-bind="hasUnreadNotifications" data-mock="true"></span>
+                        </button>
+                        <div class="h-6 w-px bg-gray-300"></div>
+                        <button class="flex items-center space-x-2 text-gray-600 hover:text-gray-900 transition-colors" data-event="click:refreshStatus">
+                            <i class="fas fa-sync-alt"></i>
+                            <span class="text-sm">Refresh</span>
+                        </button>
+                    </div>
+                </div>
+            </header>
+            <!-- @END_COMPONENT: Header -->
+
+            <!-- @COMPONENT: DashboardContent -->
+            <main class="flex-1 overflow-y-auto p-6 space-y-6">
+                <!-- Status Cards Row -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <!-- WhatsApp Connection Status -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-gray-600">WhatsApp Status</p>
+                                <p class="text-2xl font-bold text-whatsapp" data-bind="whatsapp.status" data-mock="true">Connected</p>
+                            </div>
+                            <div class="w-12 h-12 bg-whatsapp bg-opacity-10 rounded-lg flex items-center justify-center">
+                                <i class="fab fa-whatsapp text-whatsapp text-2xl"></i>
+                            </div>
+                        </div>
+                        <div class="mt-4 flex items-center">
+                            <div class="w-2 h-2 bg-whatsapp rounded-full mr-2" data-bind="whatsapp.connectionIndicator" data-mock="true"></div>
+                            <span class="text-xs text-gray-500" data-bind="whatsapp.lastSeen" data-mock="true">Last seen: 2 minutes ago</span>
+                        </div>
+                    </div>
+
+                    <!-- Messages Sent Today -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-gray-600">Messages Today</p>
+                                <p class="text-2xl font-bold text-gray-900" data-bind="stats.messagesCount" data-mock="true">47</p>
+                            </div>
+                            <div class="w-12 h-12 bg-primary bg-opacity-10 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-paper-plane text-primary text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <span class="text-xs text-secondary">+12% from yesterday</span>
+                        </div>
+                    </div>
+
+                    <!-- Reports Sent -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-gray-600">Reports Sent</p>
+                                <p class="text-2xl font-bold text-gray-900" data-bind="stats.reportsCount" data-mock="true">23</p>
+                            </div>
+                            <div class="w-12 h-12 bg-secondary bg-opacity-10 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-file-pdf text-secondary text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <span class="text-xs text-gray-500">Last: 15 min ago</span>
+                        </div>
+                    </div>
+
+                    <!-- Failed Messages -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-gray-600">Failed Messages</p>
+                                <p class="text-2xl font-bold text-error" data-bind="stats.failedCount" data-mock="true">2</p>
+                            </div>
+                            <div class="w-12 h-12 bg-error bg-opacity-10 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-exclamation-triangle text-error text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <button class="text-xs text-error hover:underline" data-event="click:viewFailedMessages">View Details</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Content Grid -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Send Message Panel -->
+                    <div class="lg:col-span-1">
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                            <h3 class="text-lg font-semibold text-gray-900 mb-4">Send Message</h3>
+                            
+                            <!-- Quick Message Form -->
+                            <form class="space-y-4" data-event="submit:handleSendMessage">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
+                                    <input type="tel" 
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-colors" 
+                                           placeholder="+1234567890"
+                                           data-bind="message.phoneNumber">
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Message</label>
+                                    <textarea rows="3" 
+                                              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-colors resize-none" 
+                                              placeholder="Type your message here..."
+                                              data-bind="message.content"></textarea>
+                                </div>
+                                
+                                <button type="submit" 
+                                        class="w-full bg-whatsapp hover:bg-green-600 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
+                                        data-implementation="Should validate form before submission">
+                                    <i class="fab fa-whatsapp"></i>
+                                    <span>Send Message</span>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- File Upload Panel -->
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mt-6">
+                            <h3 class="text-lg font-semibold text-gray-900 mb-4">Send Report</h3>
+                            
+                            <!-- Drag & Drop Area -->
+                            <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary transition-colors cursor-pointer"
+                                 data-event="drop:handleFileDrop">
+                                <div class="space-y-3">
+                                    <div class="mx-auto w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
+                                        <i class="fas fa-cloud-upload-alt text-gray-400 text-xl"></i>
+                                    </div>
+                                    <div>
+                                        <p class="text-sm text-gray-600">Drag and drop your report here</p>
+                                        <p class="text-xs text-gray-400">PDF, JPG, PNG up to 10MB</p>
+                                    </div>
+                                    <button type="button" class="text-primary hover:text-blue-700 text-sm font-medium">
+                                        Browse Files
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- File Upload Form -->
+                            <form class="mt-4 space-y-4" data-event="submit:handleSendReport">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Patient/Sample ID</label>
+                                    <input type="text" 
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-colors" 
+                                           placeholder="e.g. SAMPLE-2024-001"
+                                           data-bind="report.sampleId">
+                                </div>
+                                
+                                <button type="submit" 
+                                        class="w-full bg-primary hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
+                                        data-implementation="Should handle file upload with progress indicator">
+                                    <i class="fas fa-paper-plane"></i>
+                                    <span>Send Report</span>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Recent Messages & Activity -->
+                    <div class="lg:col-span-2 space-y-6">
+                        <!-- Recent Messages -->
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-lg font-semibold text-gray-900">Recent Messages</h3>
+                                <button class="text-sm text-primary hover:text-blue-700 font-medium" data-event="click:viewAllMessages">
+                                    View All
+                                </button>
+                            </div>
+                            
+                            <div class="space-y-3">
+                                <!-- @MAP: recentMessages.map(message => ( -->
+                                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" data-mock="true">
+                                    <div class="flex items-center space-x-3">
+                                        <div class="w-2 h-2 bg-whatsapp rounded-full"></div>
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-900">+1234567890</p>
+                                            <p class="text-xs text-gray-500">Lab report for sample #12345</p>
+                                        </div>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-xs text-gray-500">2:45 PM</p>
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-whatsapp bg-opacity-10 text-whatsapp">
+                                            Delivered
+                                        </span>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" data-mock="true">
+                                    <div class="flex items-center space-x-3">
+                                        <div class="w-2 h-2 bg-warning rounded-full"></div>
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-900">+1987654321</p>
+                                            <p class="text-xs text-gray-500">Urgent: Blood test results</p>
+                                        </div>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-xs text-gray-500">1:30 PM</p>
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-warning bg-opacity-10 text-warning">
+                                            Sending
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" data-mock="true">
+                                    <div class="flex items-center space-x-3">
+                                        <div class="w-2 h-2 bg-error rounded-full"></div>
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-900">+1555123456</p>
+                                            <p class="text-xs text-gray-500">X-Ray report - follow up</p>
+                                        </div>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-xs text-gray-500">12:15 PM</p>
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-error bg-opacity-10 text-error">
+                                            Failed
+                                        </span>
+                                    </div>
+                                </div>
+                                <!-- @END_MAP )) -->
+                            </div>
+                        </div>
+
+                        <!-- System Activity Log -->
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                            <h3 class="text-lg font-semibold text-gray-900 mb-4">System Activity</h3>
+                            
+                            <div class="space-y-4">
+                                <!-- @MAP: systemLogs.map(log => ( -->
+                                <div class="flex items-start space-x-3" data-mock="true">
+                                    <div class="flex-shrink-0 w-2 h-2 bg-whatsapp rounded-full mt-2"></div>
+                                    <div class="flex-1">
+                                        <p class="text-sm text-gray-900">WhatsApp session authenticated successfully</p>
+                                        <p class="text-xs text-gray-500">3:42 PM - Session ID: ws_abc123</p>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex items-start space-x-3" data-mock="true">
+                                    <div class="flex-shrink-0 w-2 h-2 bg-primary rounded-full mt-2"></div>
+                                    <div class="flex-1">
+                                        <p class="text-sm text-gray-900">API endpoint /api/send-report called</p>
+                                        <p class="text-xs text-gray-500">3:35 PM - File: lab_report_001.pdf (2.3MB)</p>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex items-start space-x-3" data-mock="true">
+                                    <div class="flex-shrink-0 w-2 h-2 bg-secondary rounded-full mt-2"></div>
+                                    <div class="flex-1">
+                                        <p class="text-sm text-gray-900">Message delivery confirmed</p>
+                                        <p class="text-xs text-gray-500">3:33 PM - Recipient: +1234567890</p>
+                                    </div>
+                                </div>
+
+                                <div class="flex items-start space-x-3" data-mock="true">
+                                    <div class="flex-shrink-0 w-2 h-2 bg-warning rounded-full mt-2"></div>
+                                    <div class="flex-1">
+                                        <p class="text-sm text-gray-900">File cleanup completed</p>
+                                        <p class="text-xs text-gray-500">3:30 PM - Removed 3 temporary files from uploads/</p>
+                                    </div>
+                                </div>
+                                <!-- @END_MAP )) -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Message History Table -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div class="flex items-center justify-between mb-6">
+                        <h3 class="text-lg font-semibold text-gray-900">Message History</h3>
+                        <div class="flex items-center space-x-3">
+                            <select class="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:border-transparent" data-bind="filter.status">
+                                <option value="all">All Status</option>
+                                <option value="delivered">Delivered</option>
+                                <option value="pending">Pending</option>
+                                <option value="failed">Failed</option>
+                            </select>
+                            <input type="search" 
+                                   placeholder="Search messages..." 
+                                   class="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:border-transparent"
+                                   data-bind="filter.searchQuery">
+                        </div>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 border-b border-gray-200">
+                                <tr>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Timestamp</th>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Recipient</th>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Type</th>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Content</th>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Status</th>
+                                    <th class="text-left py-3 px-4 font-medium text-gray-700">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <!-- @MAP: messageHistory.map(message => ( -->
+                                <tr class="hover:bg-gray-50 transition-colors" data-mock="true">
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 font-mono text-xs">2024-01-15 15:42:33</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900">+1234567890</div>
+                                        <div class="text-xs text-gray-500">Dr. Smith's Office</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                                            <i class="fas fa-file-pdf mr-1"></i>
+                                            PDF Report
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 truncate max-w-xs">Lab results for sample #SAMP-2024-001</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-whatsapp bg-opacity-10 text-whatsapp">
+                                            <div class="w-1.5 h-1.5 bg-whatsapp rounded-full mr-2"></div>
+                                            Delivered
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <button class="text-primary hover:text-blue-700 text-xs font-medium mr-3" data-event="click:viewMessage">View</button>
+                                        <button class="text-secondary hover:text-green-700 text-xs font-medium" data-event="click:resendMessage">Resend</button>
+                                    </td>
+                                </tr>
+                                
+                                <tr class="hover:bg-gray-50 transition-colors" data-mock="true">
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 font-mono text-xs">2024-01-15 14:28:15</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900">+1987654321</div>
+                                        <div class="text-xs text-gray-500">Patient Portal</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800">
+                                            <i class="fas fa-comment mr-1"></i>
+                                            Text
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 truncate max-w-xs">Your blood test results are ready for pickup</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-warning bg-opacity-10 text-warning">
+                                            <div class="w-1.5 h-1.5 bg-warning rounded-full mr-2 animate-pulse"></div>
+                                            Sending
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <button class="text-primary hover:text-blue-700 text-xs font-medium mr-3" data-event="click:viewMessage">View</button>
+                                        <button class="text-gray-400 text-xs font-medium cursor-not-allowed">Resend</button>
+                                    </td>
+                                </tr>
+
+                                <tr class="hover:bg-gray-50 transition-colors" data-mock="true">
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 font-mono text-xs">2024-01-15 13:15:42</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900">+1555123456</div>
+                                        <div class="text-xs text-gray-500">Emergency Contact</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-800">
+                                            <i class="fas fa-image mr-1"></i>
+                                            Image
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <div class="text-gray-900 truncate max-w-xs">X-Ray scan - urgent review required</div>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-error bg-opacity-10 text-error">
+                                            <div class="w-1.5 h-1.5 bg-error rounded-full mr-2"></div>
+                                            Failed
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <button class="text-primary hover:text-blue-700 text-xs font-medium mr-3" data-event="click:viewMessage">View</button>
+                                        <button class="text-secondary hover:text-green-700 text-xs font-medium" data-event="click:resendMessage">Resend</button>
+                                    </td>
+                                </tr>
+                                <!-- @END_MAP )) -->
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Pagination -->
+                    <div class="flex items-center justify-between mt-6 pt-4 border-t border-gray-200">
+                        <div class="text-sm text-gray-700">
+                            Showing <span class="font-medium" data-bind="pagination.start" data-mock="true">1</span> to <span class="font-medium" data-bind="pagination.end" data-mock="true">10</span> of <span class="font-medium" data-bind="pagination.total" data-mock="true">47</span> results
+                        </div>
+                        <div class="flex space-x-2">
+                            <button class="px-3 py-1 text-sm text-gray-600 hover:text-gray-900 disabled:text-gray-400" data-event="click:previousPage">Previous</button>
+                            <button class="px-3 py-1 text-sm bg-primary text-white rounded-md" data-bind="pagination.currentPage" data-mock="true">1</button>
+                            <button class="px-3 py-1 text-sm text-gray-600 hover:text-gray-900" data-mock="true">2</button>
+                            <button class="px-3 py-1 text-sm text-gray-600 hover:text-gray-900" data-mock="true">3</button>
+                            <button class="px-3 py-1 text-sm text-gray-600 hover:text-gray-900" data-event="click:nextPage">Next</button>
+                        </div>
+                    </div>
+                </div>
+            </main>
+            <!-- @END_COMPONENT: DashboardContent -->
+        </div>
+        <!-- @END_COMPONENT: MainContent -->
+    </div>
+    <!-- @END_COMPONENT: AppLayout -->
+
+    <!-- @COMPONENT: QRModal -->
+    <div id="qrModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" data-event="click:closeModal">
+        <div class="bg-white rounded-xl p-6 max-w-md w-full mx-4" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-gray-900">Connect WhatsApp</h3>
+                <button class="text-gray-400 hover:text-gray-600" data-event="click:closeModal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="text-center">
+                <div class="w-64 h-64 bg-gray-100 rounded-lg mx-auto mb-4 flex items-center justify-center">
+                    <div class="text-center">
+                        <i class="fas fa-qrcode text-4xl text-gray-400 mb-2"></i>
+                        <p class="text-sm text-gray-500">Scan with WhatsApp</p>
+                    </div>
+                    <!-- @FUNCTIONALITY: This should display the actual QR code generated by whatsapp-web.js -->
+                </div>
+                
+                <div class="space-y-2">
+                    <p class="text-sm text-gray-600">1. Open WhatsApp on your phone</p>
+                    <p class="text-sm text-gray-600">2. Tap Menu or Settings and select Linked Devices</p>
+                    <p class="text-sm text-gray-600">3. Tap Link a Device</p>
+                    <p class="text-sm text-gray-600">4. Point your phone to this screen to capture the code</p>
+                </div>
+                
+                <div class="mt-6 flex space-x-3">
+                    <button class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors" data-event="click:refreshQR">
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        Refresh QR
+                    </button>
+                    <button class="flex-1 bg-primary hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors" data-event="click:closeModal">
+                        Done
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- @END_COMPONENT: QRModal -->
+
+    <!-- @COMPONENT: NotificationToast -->
+    <div id="notificationToast" class="fixed top-4 right-4 bg-white border border-gray-200 rounded-lg shadow-lg p-4 transform translate-x-full transition-transform duration-300 z-50">
+        <div class="flex items-center space-x-3">
+            <div class="flex-shrink-0">
+                <div class="w-8 h-8 bg-whatsapp bg-opacity-10 rounded-full flex items-center justify-center">
+                    <i class="fas fa-check text-whatsapp text-sm"></i>
+                </div>
+            </div>
+            <div class="flex-1">
+                <p class="text-sm font-medium text-gray-900" data-bind="toast.title" data-mock="true">Message Sent</p>
+                <p class="text-xs text-gray-500" data-bind="toast.message" data-mock="true">Your message has been delivered successfully</p>
+            </div>
+            <button class="text-gray-400 hover:text-gray-600" data-event="click:dismissToast">
+                <i class="fas fa-times text-sm"></i>
+            </button>
+        </div>
+    </div>
+    <!-- @END_COMPONENT: NotificationToast -->
+
+    <script>
+        // TODO: Implement business logic, API calls, or state management
+        
+        (function() {
+            // Mock real-time status updates
+            const statusElements = {
+                whatsappStatus: document.querySelector('[data-bind="whatsapp.status"]'),
+                messagesCount: document.querySelector('[data-bind="stats.messagesCount"]'),
+                connectionIndicator: document.querySelector('[data-bind="whatsapp.connectionIndicator"]')
+            };
+
+            // Simulate WebSocket connection for real-time updates
+            function simulateRealtimeUpdates() {
+                // This would normally be handled by Socket.IO
+                setInterval(() => {
+                    // Update connection status indicator
+                    if (statusElements.connectionIndicator) {
+                        statusElements.connectionIndicator.classList.toggle('animate-pulse');
+                    }
+                }, 2000);
+            }
+
+            // Initialize mock functionality
+            simulateRealtimeUpdates();
+
+            // Mock event handlers for demo purposes
+            document.addEventListener('click', function(e) {
+                const target = e.target.closest('[data-event]');
+                if (!target) return;
+
+                const event = target.getAttribute('data-event');
+                e.preventDefault();
+
+                switch(event) {
+                    case 'click:refreshStatus':
+                        // TODO: Implement status refresh logic
+                        showToast('Status', 'System status refreshed');
+                        break;
+                    case 'submit:handleSendMessage':
+                        // TODO: Implement message sending logic
+                        showToast('Success', 'Message sent successfully');
+                        break;
+                    case 'submit:handleSendReport':
+                        // TODO: Implement report upload and sending logic
+                        showToast('Success', 'Report sent successfully');
+                        break;
+                }
+            });
+
+            // Mock toast notification system
+            function showToast(title, message) {
+                const toast = document.getElementById('notificationToast');
+                const titleEl = toast.querySelector('[data-bind="toast.title"]');
+                const messageEl = toast.querySelector('[data-bind="toast.message"]');
+                
+                if (titleEl) titleEl.textContent = title;
+                if (messageEl) messageEl.textContent = message;
+                
+                toast.classList.remove('translate-x-full');
+                
+                setTimeout(() => {
+                    toast.classList.add('translate-x-full');
+                }, 3000);
+            }
+        })();
+    </script>
+</body>
+</html>

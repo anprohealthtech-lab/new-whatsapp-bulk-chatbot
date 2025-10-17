@@ -1,0 +1,37 @@
+**Prompt for AI Backend Creation Agent**
+
+**Goal:** Create a robust, deployable Node.js backend for a 'WhatsApp LIMS Integration System'. This backend will manage WhatsApp communication, API endpoints, and message history.
+
+**Current Context:**
+This project is a Node.js application. The existing backend logic is primarily in `server/index.js` and `server/services/`. The frontend expects the backend to be accessible via API calls and Socket.IO.
+
+**Key Requirements for the New Backend:**
+
+1.  **Core Functionality:**
+    *   **WhatsApp Integration**: Utilize `whatsapp-web.js` for sending messages and attachments. Implement persistent session management (e.g., `LocalAuth` with a `dataPath`).
+    *   **API Endpoints**:
+        *   `POST /api/send-message`: Send text messages.
+        *   `POST /api/send-report`: Send messages with PDF/image attachments (support `multipart/form-data` and `multer`).
+        *   `GET /api/status`: Report backend and WhatsApp connection status.
+        *   `GET /api/messages`: Retrieve logged message history.
+        *   `POST /api/generate-qr`: Trigger QR code generation for new WhatsApp connection.
+    *   **Real-time Communication**: Use `socket.io` to emit WhatsApp status updates (`qr-code`, `whatsapp-status`, `whatsapp-authenticated`, `whatsapp-auth-failure`, `disconnected`) and message delivery updates (`message-update`, `message-sent`) to connected clients.
+    *   **Message Logging**: Implement a service to log all sent messages with their status and details.
+    *   **File Handling**: Create an `uploads` directory for temporary storage of incoming report files, and ensure cleanup after sending.
+    *   **CORS**: Properly configure CORS for `http://localhost:4173` (frontend development) and any production frontend URL.
+
+2.  **Environment & Configuration:**
+    *   **Environment Variables**: All sensitive data and configurable parameters must be managed via environment variables (e.g., `PORT`, `WHATSAPP_CLIENT_ID`, `MAX_FILE_SIZE`, `ALLOWED_FILE_TYPES`). Provide a `.env.example` file.
+    *   **Session Persistence**: WhatsApp session data should be stored in a dedicated, persistent directory (e.g., `server/sessions`).
+
+3.  **Deployment Readiness:**
+    *   **Start Command**: Define a clear `start` script in `package.json` (e.g., `node server/index.js`).
+    *   **Host Binding**: The server must listen on `process.env.PORT` and bind to `0.0.0.0` for cloud deployment compatibility.
+    *   **Dependencies**: Include all necessary `npm` packages in `package.json` (e.g., `express`, `socket.io`, `whatsapp-web.js`, `multer`, `cors`, `uuid`, `dotenv`, `qrcode-terminal`).
+
+4.  **GitHub Repository Structure:**
+    *   The generated code should be structured to fit into a typical Node.js project, ideally within a `server/` directory, mirroring the existing structure.
+    *   Provide a complete `package.json` with all dependencies.
+
+**Output:**
+Provide the complete code for the backend, including `package.json`, `server/index.js`, and any necessary service files (e.g., `server/services/WhatsAppService.js`, `server/services/MessageService.js`), along with instructions for local setup and starting the server.

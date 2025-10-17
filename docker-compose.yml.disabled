@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  whatsapp-lims:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - MAX_FILE_SIZE=10485760
+      - ALLOWED_FILE_TYPES=pdf,jpg,jpeg,png
+    volumes:
+      - sessions_data:/app/server/sessions
+      - uploads_data:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Optional: Local PostgreSQL for development
+  # For production, use DigitalOcean Managed Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: whatsapp_lims_db
+    environment:
+      POSTGRES_DB: lims_db
+      POSTGRES_USER: lims_user
+      POSTGRES_PASSWORD: your_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    profiles: ["development"]
+
+volumes:
+  sessions_data:
+    driver: local
+  uploads_data:
+    driver: local
+  postgres_data:
+    driver: local

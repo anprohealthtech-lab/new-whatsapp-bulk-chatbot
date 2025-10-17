@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-lims-deployment",
+  "version": "1.0.0",
+  "description": "WhatsApp LIMS Integration System - DigitalOcean Deployment",
+  "scripts": {
+    "install": "cd NodeBackend && npm install",
+    "build": "cd NodeBackend && npm run build",
+    "start": "cd NodeBackend && npm start",
+    "dev": "cd NodeBackend && npm run dev"
+  },
+  "keywords": ["whatsapp", "lims", "baileys", "digitalocean"],
+  "author": "ANPro Health Tech Lab",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}

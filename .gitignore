@@ -1,0 +1,50 @@
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+
+# Uploads and sessions (persistent data)
+NodeBackend/uploads/*
+!NodeBackend/uploads/.gitkeep
+NodeBackend/server/sessions/*
+!NodeBackend/server/sessions/.gitkeep
+
+# Database
+*.sqlite
+*.db
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Deployment artifacts
+app-deployment.json
+*.tar.gz
+
+# WhatsApp session files (sensitive)
+.wwebjs_auth/
+.wwebjs_cache/
