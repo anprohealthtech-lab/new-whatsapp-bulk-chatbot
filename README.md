@@ -1,8 +1,10 @@
-# WhatsApp LIMS DigitalOcean Deployment Guide
+# Multi-User WhatsApp LIMS Integration System
 
-## 🚀 Production-Ready WhatsApp LIMS Integration
+🚀 **Complete multi-tenant WhatsApp Laboratory Information Management System with individual session management**
 
-This project integrates Laboratory Information Management Systems (LIMS) with WhatsApp for automated patient report delivery, optimized for DigitalOcean deployment with persistent sessions.
+## 🎯 Overview
+
+This enhanced WhatsApp LIMS system provides a comprehensive multi-user architecture where each user can manage their own WhatsApp sessions independently. Built with modern technologies and deployed on Neon PostgreSQL.
 
 ## Project Structure
 - **NodeBackend/**: Contains the backend server and frontend code.
