@@ -1,5 +1,20 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, index, unique } from 'drizzle-orm/pg-core';
 import { createInsertSchema, createSelectSchema } from 'drizzle-zod';
+import { z } from 'zod';
+
+// Validation schemas for API endpoints
+export const sendMessageSchema = z.object({
+  phoneNumber: z.string().min(1, "Phone number is required"),
+  content: z.string().min(1, "Message content is required"),
+  templateData: z.record(z.string()).optional(),
+});
+
+export const sendReportSchema = z.object({
+  phoneNumber: z.string().min(1, "Phone number is required"),
+  content: z.string().min(1, "Message content is required"),
+  fileName: z.string().optional(),
+  templateData: z.record(z.string()).optional(),
+});
 
 // Organizations table
 export const organizations = pgTable('organizations', {
