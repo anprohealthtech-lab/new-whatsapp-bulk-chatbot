@@ -7,8 +7,12 @@ import type { IStorage } from '../storage';
 export class DatabaseStorage implements IStorage {
   // User methods
   async getUser(id: string): Promise<User | undefined> {
-    const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
-    return result[0];
+    const rows = await db.select().from(users).where(eq(users.id, id));
+    return rows[0];
+  }
+
+  async getUsers(): Promise<User[]> {
+    return await db.select().from(users);
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
@@ -196,5 +200,67 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(messages.createdAt))
       .limit(filters.limit)
       .offset(filters.offset) as any;
+  }
+
+  // Multi-User WhatsApp Session Management
+  async getUserActiveSessions(userId: string): Promise<any[]> {
+    try {
+      const sessions = await db.select()
+        .from(whatsappSessions)
+        .where(and(
+          eq(whatsappSessions.userId, userId),
+          eq(whatsappSessions.isActive, true)
+        ));
+
+      return sessions;
+    } catch (error: any) {
+      console.error('Error getting user active sessions:', error);
+      throw new Error(`Failed to get user active sessions: ${error.message}`);
+    }
+  }
+
+  async getAllActiveWhatsAppSessions(): Promise<any[]> {
+    try {
+      const sessions = await db.select()
+        .from(whatsappSessions)
+        .where(eq(whatsappSessions.isActive, true));
+
+      return sessions;
+    } catch (error: any) {
+      console.error('Error getting all active sessions:', error);
+      throw new Error(`Failed to get all active sessions: ${error.message}`);
+    }
+  }
+
+  async updateUserWhatsAppSession(userId: string, updates: any): Promise<void> {
+    try {
+      await db.update(whatsappSessions)
+        .set({
+          ...updates,
+          updatedAt: new Date()
+        })
+        .where(eq(whatsappSessions.userId, userId));
+
+    } catch (error: any) {
+      console.error('Error updating user WhatsApp session:', error);
+      throw new Error(`Failed to update user WhatsApp session: ${error.message}`);
+    }
+  }
+
+  async createWhatsAppSession(session: any): Promise<any> {
+    try {
+      const [newSession] = await db.insert(whatsappSessions)
+        .values({
+          ...session,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        })
+        .returning();
+
+      return newSession;
+    } catch (error: any) {
+      console.error('Error creating WhatsApp session:', error);
+      throw new Error(`Failed to create WhatsApp session: ${error.message}`);
+    }
   }
 }

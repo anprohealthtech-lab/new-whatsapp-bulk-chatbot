@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 export interface IStorage {
   // User methods
   getUser(id: string): Promise<User | undefined>;
+  getUsers(): Promise<User[]>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   upsertUser(userData: any): Promise<User>;
@@ -23,6 +24,12 @@ export interface IStorage {
   // System log methods
   getSystemLogs(limit?: number, offset?: number): Promise<SystemLog[]>;
   createSystemLog(log: InsertSystemLog): Promise<SystemLog>;
+
+  // Multi-User WhatsApp Session methods
+  getUserActiveSessions(userId: string): Promise<any[]>;
+  getAllActiveWhatsAppSessions(): Promise<any[]>;
+  updateUserWhatsAppSession(userId: string, updates: any): Promise<void>;
+  createWhatsAppSession(session: any): Promise<any>;
 }
 
 export class MemStorage implements IStorage {
@@ -40,10 +47,29 @@ export class MemStorage implements IStorage {
     return this.users.get(id);
   }
 
+  async getUsers(): Promise<User[]> {
+    return Array.from(this.users.values());
+  }
+
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+    return Array.from(this.users.values()).find(u => u.username === username);
+  }
+
+  // Multi-User WhatsApp Session methods (stub implementations)
+  async getUserActiveSessions(userId: string): Promise<any[]> {
+    return [];
+  }
+
+  async getAllActiveWhatsAppSessions(): Promise<any[]> {
+    return [];
+  }
+
+  async updateUserWhatsAppSession(userId: string, updates: any): Promise<void> {
+    // Stub implementation
+  }
+
+  async createWhatsAppSession(session: any): Promise<any> {
+    return session;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {

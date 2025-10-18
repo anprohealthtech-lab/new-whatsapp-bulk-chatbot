@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import multer from "multer";
 import cors from "cors";
 import { storage } from "./storage";
-import { whatsAppService } from "./services/WhatsAppService";
+import { multiUserWhatsAppService } from "./services/MultiUserWhatsAppService";
 import { messageService } from "./services/MessageService";
 import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
@@ -34,12 +34,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
   app.use(cors(corsOptions));
 
-  // Initialize WhatsApp service
+  // Initialize Multi-User WhatsApp service
   try {
-    await whatsAppService.initialize();
-    log("WhatsApp service initialized successfully");
-  } catch (error) {
-    log(`Failed to initialize WhatsApp service: ${error.message}`);
+    await multiUserWhatsAppService.initialize();
+    log("Multi-User WhatsApp service initialized successfully");
+  } catch (error: any) {
+    log(`Failed to initialize Multi-User WhatsApp service: ${error.message}`);
   }
 
   // Create HTTP server
@@ -52,10 +52,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   wss.on('connection', (ws) => {
     log('WebSocket client connected');
 
-    // Send current WhatsApp status
-    const status = whatsAppService.getStatus();
+    // Send current Multi-User WhatsApp service status
+    const status = multiUserWhatsAppService.getAllUsersSummary();
     ws.send(JSON.stringify({
-      type: 'whatsapp-status',
+      type: 'multi-user-status',
       data: status,
     }));
 
@@ -79,44 +79,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
-  // Setup WhatsApp service event listeners with reconnection handling
+  // Setup Multi-User WhatsApp service event listeners
   const setupWhatsAppEventListeners = () => {
-    // Don't remove all listeners as it breaks ongoing QR code broadcasting
-    // Only set up listeners if they don't exist already
     
-    whatsAppService.on('qr-code', (data) => {
-      console.log('🎯 ROUTES: Received qr-code event from WhatsApp service');
+    multiUserWhatsAppService.on('user-qr-code', (data) => {
+      console.log('🎯 ROUTES: Received user-qr-code event from Multi-User WhatsApp service');
       console.log('🎯 QR Data received:', data);
       console.log('🎯 WebSocket clients count:', wss.clients.size);
       console.log('🎯 Broadcasting QR code to WebSocket clients...');
-      broadcast('qr-code', data);
+      broadcast('user-qr-code', data);
       console.log('🎯 QR code broadcast completed');
     });
 
-    whatsAppService.on('whatsapp-status', (data) => {
-      broadcast('whatsapp-status', data);
+    multiUserWhatsAppService.on('user-status-update', (data) => {
+      broadcast('user-status-update', data);
     });
 
-    whatsAppService.on('whatsapp-authenticated', (data) => {
-      broadcast('whatsapp-authenticated', data);
+    multiUserWhatsAppService.on('user-authenticated', (data) => {
+      broadcast('user-authenticated', data);
     });
 
-    whatsAppService.on('whatsapp-auth-failure', (data) => {
-      broadcast('whatsapp-auth-failure', data);
+    multiUserWhatsAppService.on('user-auth-failure', (data) => {
+      broadcast('user-auth-failure', data);
     });
 
-    whatsAppService.on('disconnected', (data) => {
-      broadcast('disconnected', data);
+    multiUserWhatsAppService.on('user-disconnected', (data) => {
+      broadcast('user-disconnected', data);
     });
 
-    whatsAppService.on('message-sent', (data) => {
-      broadcast('message-sent', data);
+    multiUserWhatsAppService.on('user-message-sent', (data) => {
+      broadcast('user-message-sent', data);
     });
 
-    whatsAppService.on('message-update', async (data) => {
+    multiUserWhatsAppService.on('user-message-update', async (data) => {
       // Update message delivery status
       await messageService.updateMessageDeliveryStatus(data.messageId, data.ack === 3 ? 'delivered' : 'failed');
-      broadcast('message-update', data);
+      broadcast('user-message-update', data);
     });
   };
   
@@ -124,17 +122,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // API Routes
 
-  // Send text message
+  // Send text message (DEPRECATED - Use user-specific endpoints)
   app.post('/api/send-message', async (req, res) => {
     try {
-      const validatedData = sendMessageSchema.parse(req.body);
-      const message = await messageService.sendTextMessage(
-        validatedData.phoneNumber,
-        validatedData.content
-      );
-
-      res.json({ success: true, message });
-    } catch (error) {
+      res.status(400).json({ 
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/send-message instead.',
+        migration: {
+          newEndpoint: 'POST /api/users/{userId}/whatsapp/send-message',
+          description: 'Each user now has their own WhatsApp session for sending messages'
+        }
+      });
+    } catch (error: any) {
       log(`Send message error: ${error.message}`);
       res.status(400).json({ 
         success: false, 
@@ -204,7 +203,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get system status
   app.get('/api/status', async (req, res) => {
     try {
-      const whatsappStatus = whatsAppService.getStatus();
+      const whatsappStatus = multiUserWhatsAppService.getStats();
       const messageStats = await messageService.getMessageStats();
       const systemLogs = await storage.getSystemLogs(10);
 
@@ -217,7 +216,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           timestamp: new Date().toISOString(),
         }
       });
-    } catch (error) {
+    } catch (error: any) {
       log(`Status error: ${error.message}`);
       res.status(500).json({ 
         success: false, 
@@ -271,12 +270,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Generate QR code endpoint
+  // Generate QR code endpoint (DEPRECATED - Use user-specific endpoints)
   app.post('/api/generate-qr', async (req: Request, res: Response) => {
     try {
-      log('Generate QR code request received');
-      await whatsAppService.generateQRCode();
-      res.json({ success: true, message: 'QR code generation started' });
+      log('Generate QR code request received (DEPRECATED)');
+      res.status(400).json({ 
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/connect instead.',
+        migration: {
+          newEndpoint: 'POST /api/users/{userId}/whatsapp/connect',
+          description: 'Each user now has their own WhatsApp session'
+        }
+      });
     } catch (error: any) {
       log(`Generate QR error: ${error.message}`);
       res.status(400).json({
@@ -286,26 +291,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get current QR code endpoint (fallback for when WebSocket fails)
+  // Get current QR code endpoint (DEPRECATED)
   app.get('/api/qr-code', (req: Request, res: Response) => {
     try {
-      // Return the last generated QR code
-      const currentQR = whatsAppService.getCurrentQR();
-      if (currentQR) {
-        res.json({ 
-          success: true, 
-          data: { 
-            qr: currentQR.qr, 
-            generated: currentQR.timestamp,
-            message: 'QR code available for scanning'
-          } 
-        });
-      } else {
-        res.json({ 
-          success: false, 
-          message: 'No QR code available. WhatsApp service initializing...' 
-        });
-      }
+      res.json({ 
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/qr instead.',
+        migration: {
+          newEndpoint: 'GET /api/users/{userId}/whatsapp/qr',
+          description: 'Each user now has their own WhatsApp session and QR code'
+        }
+      });
     } catch (error: any) {
       log(`Get QR error: ${error.message}`);
       res.status(500).json({
@@ -315,15 +311,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // WhatsApp API endpoints
+  // WhatsApp API endpoints (DEPRECATED)
   app.get('/api/whatsapp/status', async (req, res) => {
     try {
-      const status = whatsAppService.getStatus();
       res.json({ 
-        success: true, 
-        data: status
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/status instead.',
+        migration: {
+          newEndpoint: 'GET /api/users/{userId}/whatsapp/status',
+          description: 'Each user now has their own WhatsApp session status'
+        }
       });
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp status error: ${errorMessage}`);
       res.status(500).json({ 
@@ -335,15 +334,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/whatsapp/connect', async (req, res) => {
     try {
-      // Re-setup event listeners before connecting
-      setupWhatsAppEventListeners();
-      
-      const result = await whatsAppService.initialize();
       res.json({ 
-        success: true, 
-        message: 'WhatsApp connection initiated'
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/connect instead.',
+        migration: {
+          newEndpoint: 'POST /api/users/{userId}/whatsapp/connect',
+          description: 'Each user now has their own WhatsApp session connection'
+        }
       });
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp connect error: ${errorMessage}`);
       res.status(400).json({ 
@@ -355,12 +354,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/whatsapp/disconnect', async (req, res) => {
     try {
-      await whatsAppService.disconnect();
       res.json({ 
-        success: true, 
-        message: 'WhatsApp disconnected successfully'
+        success: false, 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/disconnect instead.',
+        migration: {
+          newEndpoint: 'DELETE /api/users/{userId}/whatsapp/session',
+          description: 'Each user now has their own WhatsApp session disconnection'
+        }
       });
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp disconnect error: ${errorMessage}`);
       res.status(400).json({ 
@@ -372,13 +374,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/whatsapp/qr', async (req, res) => {
     try {
-      // For now, return a placeholder since qrCode isn't in the status type
-      // The QR code will be handled via WebSocket events
       res.json({ 
         success: false, 
-        error: 'QR code available via WebSocket events only. Use /api/generate-qr endpoint.' 
+        error: 'This endpoint is deprecated. Use /api/users/{userId}/whatsapp/qr instead.',
+        migration: {
+          newEndpoint: 'GET /api/users/{userId}/whatsapp/qr',
+          description: 'Each user now has their own WhatsApp session and QR code'
+        }
       });
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp QR error: ${errorMessage}`);
       res.status(500).json({ 
@@ -424,6 +428,143 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
   });
+
+  // =================== NEW MULTI-USER WHATSAPP API ENDPOINTS ===================
+  
+  // Get all users with their WhatsApp session status
+  app.get('/api/users/whatsapp/summary', async (req, res) => {
+    try {
+      const summary = multiUserWhatsAppService.getStats();
+      res.json({ success: true, data: summary });
+    } catch (error: any) {
+      log(`Get users summary error: ${error.message}`);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get users summary' 
+      });
+    }
+  });
+
+  // Connect a specific user to WhatsApp (generates QR if needed)
+  app.post('/api/users/:userId/whatsapp/connect', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      
+      // Validate user exists
+      const users = await storage.getUsers();
+      const user = users.find(u => u.id === userId);
+      if (!user) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'User not found' 
+        });
+      }
+
+      const result = await multiUserWhatsAppService.createUserSession(userId);
+      res.json({ 
+        success: true, 
+        data: result,
+        message: `WhatsApp connection initiated for user ${user.name}` 
+      });
+    } catch (error: any) {
+      log(`User WhatsApp connect error: ${error.message}`);
+      res.status(400).json({ 
+        success: false, 
+        error: error.message || 'Failed to connect user to WhatsApp' 
+      });
+    }
+  });
+
+  // Get specific user's WhatsApp status
+  app.get('/api/users/:userId/whatsapp/status', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const sessions = multiUserWhatsAppService.getUserSessions(userId);
+      res.json({ success: true, data: { sessions } });
+    } catch (error: any) {
+      log(`Get user status error: ${error.message}`);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get user WhatsApp status' 
+      });
+    }
+  });
+
+  // Get specific user's QR code
+  app.get('/api/users/:userId/whatsapp/qr', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      // For now, return a message that QR codes are available via WebSocket events
+      res.json({ 
+        success: false, 
+        error: 'QR codes are available via WebSocket events (user-qr-code). Create a session first with POST /api/users/:userId/whatsapp/connect' 
+      });
+    } catch (error: any) {
+      log(`Get user QR error: ${error.message}`);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get user QR code' 
+      });
+    }
+  });
+
+  // Send message from specific user
+  app.post('/api/users/:userId/whatsapp/send-message', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { phoneNumber, message } = req.body;
+
+      if (!phoneNumber || !message) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Phone number and message are required' 
+        });
+      }
+
+      const result = await multiUserWhatsAppService.sendMessageFromUser(userId, phoneNumber, message);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      log(`User send message error: ${error.message}`);
+      res.status(400).json({ 
+        success: false, 
+        error: error.message || 'Failed to send message' 
+      });
+    }
+  });
+
+  // Disconnect specific user from WhatsApp
+  app.delete('/api/users/:userId/whatsapp/session', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      await multiUserWhatsAppService.disconnectUser(userId);
+      res.json({ 
+        success: true, 
+        message: 'User WhatsApp session disconnected successfully' 
+      });
+    } catch (error: any) {
+      log(`User disconnect error: ${error.message}`);
+      res.status(400).json({ 
+        success: false, 
+        error: error.message || 'Failed to disconnect user from WhatsApp' 
+      });
+    }
+  });
+
+  // Get all active WhatsApp sessions
+  app.get('/api/admin/whatsapp/sessions', async (req, res) => {
+    try {
+      const sessions = multiUserWhatsAppService.getActiveUserSessions();
+      res.json({ success: true, data: sessions });
+    } catch (error: any) {
+      log(`Get all sessions error: ${error.message}`);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get active sessions' 
+      });
+    }
+  });
+
+  // =================== END MULTI-USER WHATSAPP API ENDPOINTS ===================
 
   // External API routes for integration with other apps
   app.use('/api', externalApiRoutes);
