@@ -53,7 +53,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     log('WebSocket client connected');
 
     // Send current Multi-User WhatsApp service status
-    const status = multiUserWhatsAppService.getAllUsersSummary();
+    const status = multiUserWhatsAppService.getStats();
     ws.send(JSON.stringify({
       type: 'multi-user-status',
       data: status,
