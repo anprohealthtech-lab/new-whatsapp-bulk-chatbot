@@ -5,10 +5,10 @@
   "license": "MIT",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
-    "build": "npm run build:client && npm run build:server",
-    "build:client": "./node_modules/.bin/vite build",
-    "build:server": "./node_modules/.bin/esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist --external:./vite-dev --external:./vite",
-    "start": "cross-env NODE_ENV=production node dist/index.js",
+    "build": "echo 'API-only deployment - no build required'",
+    "build:client": "echo 'Skipping client build for API-only deployment'",
+    "build:server": "echo 'Using tsx for direct TypeScript execution'",
+    "start": "cross-env NODE_ENV=production tsx server/index.ts",
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:init": "tsx scripts/init-db.ts",
@@ -91,7 +91,9 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.3",
     "zod": "^3.24.2",
-    "zod-validation-error": "^3.4.0"
+    "zod-validation-error": "^3.4.0",
+    "tsx": "^4.20.3",
+    "cross-env": "^10.1.0"
   },
   "devDependencies": {
     "@replit/vite-plugin-cartographer": "^0.2.8",
@@ -112,12 +114,10 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
-    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.30.4",
     "esbuild": "^0.24.2",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",
-    "tsx": "^4.20.3",
     "typescript": "5.6.3",
     "vite": "^5.4.19"
   },
