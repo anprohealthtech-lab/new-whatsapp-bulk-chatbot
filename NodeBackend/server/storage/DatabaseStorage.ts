@@ -1,7 +1,7 @@
 import { eq, desc, and, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { users, messages, systemLogs, organizations, whatsappSessions } from '@shared/schema';
-import type { User, NewUser, Message, NewMessage, SystemLog, NewSystemLog, Organization, NewOrganization, WhatsappSession, NewWhatsappSession } from '@shared/schema';
+import { users, messages, systemLogs, whatsappSessions } from '@shared/schema';
+import type { User, NewUser, Message, NewMessage, SystemLog, NewSystemLog, WhatsappSession, NewWhatsappSession } from '@shared/schema';
 import type { IStorage } from '../storage';
 
 export class DatabaseStorage implements IStorage {
@@ -113,70 +113,66 @@ export class DatabaseStorage implements IStorage {
   }
 
   // External API methods
-  async syncExternalUser(userData: Partial<NewUser> & { id: string, isExternal?: boolean }): Promise<User> {
+  async upsertUser(userData: any): Promise<User> {
     // Check if user exists
     const existingUser = await this.getUser(userData.id);
     
     if (existingUser) {
-      // Update existing user
+      // Update existing user with only provided fields
+      const updateData: any = {
+        updated_at: new Date(),
+      };
+      
+      // Map external app fields to our schema
+      if (userData.username !== undefined) updateData.username = userData.username;
+      if (userData.email !== undefined) updateData.contact_email = userData.email;
+      if (userData.first_name !== undefined || userData.last_name !== undefined) {
+        updateData.name = `${userData.first_name || ''} ${userData.last_name || ''}`.trim();
+      }
+      if (userData.clinic_name !== undefined) updateData.clinic_name = userData.clinic_name;
+      if (userData.contact_whatsapp !== undefined) updateData.contact_whatsapp = userData.contact_whatsapp;
+      if (userData.role !== undefined) updateData.role = userData.role;
+      if (userData.contact_phone !== undefined) updateData.contact_phone = userData.contact_phone;
+      if (userData.contact_email !== undefined) updateData.contact_email = userData.contact_email;
+      if (userData.whatsapp_enabled !== undefined) updateData.whatsapp_integration_available = userData.whatsapp_enabled;
+      
       const result = await db.update(users)
-        .set({
-          ...userData,
-          updatedAt: new Date(),
-        })
+        .set(updateData)
         .where(eq(users.id, userData.id))
         .returning();
       return result[0];
     } else {
-      // Create new user
-      const newUser: NewUser = {
+      // Create new user with required fields
+      const newUser: any = {
         id: userData.id,
-        username: userData.username || 'external_user',
-        email: userData.email,
+        username: userData.username || userData.email || `user_${userData.id.slice(0, 8)}`,
+        name: userData.first_name && userData.last_name 
+          ? `${userData.first_name} ${userData.last_name}` 
+          : userData.username || 'External User',
         role: userData.role || 'user',
-        organizationId: userData.organizationId,
-        isActive: true,
+        contact_email: userData.email || userData.contact_email,
+        clinic_name: userData.clinic_name,
+        contact_whatsapp: userData.contact_whatsapp,
+        contact_phone: userData.contact_phone,
+        whatsapp_integration_available: userData.whatsapp_enabled ?? true,
       };
-      return await this.createUser(newUser);
+      
+      const result = await db.insert(users).values(newUser).returning();
+      return result[0];
     }
   }
 
-  async syncExternalOrganization(orgData: Partial<NewOrganization> & { id: string, isExternal?: boolean }): Promise<Organization> {
-    // Check if organization exists
-    const existing = await db.select().from(organizations).where(eq(organizations.id, orgData.id)).limit(1);
-    
-    if (existing.length > 0) {
-      // Update existing organization
-      const result = await db.update(organizations)
-        .set({
-          ...orgData,
-          updatedAt: new Date(),
-        })
-        .where(eq(organizations.id, orgData.id))
-        .returning();
-      return result[0];
-    } else {
-      // Create new organization
-      const newOrg: NewOrganization = {
-        id: orgData.id,
-        name: orgData.name || 'External Organization',
-        subscriptionTier: 'basic',
-        maxSessions: 5,
-        maxUsersPerOrg: 10,
-        isActive: true,
-      };
-      const result = await db.insert(organizations).values(newOrg).returning();
-      return result[0];
-    }
+  async syncExternalUser(userData: Partial<NewUser> & { id: string, isExternal?: boolean }): Promise<User> {
+    return await this.upsertUser(userData);
   }
 
   async getAllUsers(): Promise<User[]> {
-    return await db.select().from(users).orderBy(desc(users.createdAt));
+    return await db.select().from(users).orderBy(desc(users.created_at));
   }
 
   async updateUserLastLogin(userId: string): Promise<void> {
     await db.update(users)
-      .set({ lastLoginAt: new Date() })
+      .set({ last_login_at: new Date() })
       .where(eq(users.id, userId));
   }
 

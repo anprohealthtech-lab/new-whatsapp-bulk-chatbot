@@ -78,6 +78,133 @@ const apiKeyAuth = (req: any, res: any, next: any) => {
 };
 
 // ========================================
+// User Synchronization APIs
+// ========================================
+
+/**
+ * Sync Single User from External App
+ * POST /api/external/users/sync
+ */
+router.post('/external/users/sync', apiKeyAuth, async (req, res) => {
+  try {
+    const userSyncSchema = z.object({
+      id: z.string().uuid('Invalid user ID'),
+      email: z.string().email('Invalid email'),
+      username: z.string().optional(),
+      first_name: z.string().optional(),
+      last_name: z.string().optional(),
+      clinic_name: z.string().optional(),
+      contact_whatsapp: z.string().optional(),
+      role: z.string().optional(),
+      contact_phone: z.string().optional(),
+      contact_email: z.string().email().optional(),
+      is_active: z.boolean().default(true),
+      whatsapp_enabled: z.boolean().default(false),
+    });
+
+    const validatedData = userSyncSchema.parse(req.body);
+    
+    // Upsert user in our system
+    const user = await storage.upsertUser(validatedData);
+    
+    res.json({
+      success: true,
+      data: user,
+      message: 'User synchronized successfully',
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      error: 'SYNC_ERROR',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Bulk Sync Users from External App
+ * POST /api/external/users/bulk-sync
+ */
+router.post('/external/users/bulk-sync', apiKeyAuth, async (req, res) => {
+  try {
+    const bulkSyncSchema = z.object({
+      users: z.array(z.object({
+        id: z.string().uuid(),
+        email: z.string().email(),
+        username: z.string().optional(),
+        first_name: z.string().optional(),
+        last_name: z.string().optional(),
+        clinic_name: z.string().optional(),
+        contact_whatsapp: z.string().optional(),
+        role: z.string().optional(),
+        contact_phone: z.string().optional(),
+        contact_email: z.string().email().optional(),
+        is_active: z.boolean().default(true),
+        whatsapp_enabled: z.boolean().default(false),
+      })),
+    });
+
+    const validatedData = bulkSyncSchema.parse(req.body);
+    
+    const results = [];
+    for (const userData of validatedData.users) {
+      try {
+        const user = await storage.upsertUser(userData);
+        results.push({ success: true, userId: userData.id, user });
+      } catch (error: any) {
+        results.push({ 
+          success: false, 
+          userId: userData.id, 
+          error: error.message 
+        });
+      }
+    }
+    
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+    
+    res.json({
+      success: true,
+      data: {
+        total: validatedData.users.length,
+        successful,
+        failed,
+        results,
+      },
+      message: `Synchronized ${successful} users, ${failed} failed`,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      error: 'BULK_SYNC_ERROR',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Get Synchronized Users
+ * GET /api/external/users
+ */
+router.get('/external/users', apiKeyAuth, async (req, res) => {
+  try {
+    const users = await storage.getAllUsers();
+    
+    res.json({
+      success: true,
+      data: users,
+      message: 'Users retrieved successfully',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: 'FETCH_ERROR',
+      message: error.message,
+    });
+  }
+});
+
+// ========================================
 // Session Management APIs
 // ========================================
 
@@ -93,20 +220,11 @@ router.post('/external/sessions/create', apiKeyAuth, async (req, res) => {
     await storage.syncExternalUser({
       id: validatedData.userId,
       username: validatedData.userInfo.username,
-      email: validatedData.userInfo.email,
+      contact_email: validatedData.userInfo.email,
       role: validatedData.userInfo.role,
-      organizationId: validatedData.organizationId,
+      clinic_name: validatedData.userInfo.organizationName,
       isExternal: true,
     });
-    
-    // Store organization info if provided
-    if (validatedData.userInfo.organizationName) {
-      await storage.syncExternalOrganization({
-        id: validatedData.organizationId,
-        name: validatedData.userInfo.organizationName,
-        isExternal: true,
-      });
-    }
     
     // Create WhatsApp session
     const session = await multiWhatsAppService.createSession({
@@ -409,7 +527,16 @@ router.put('/external/users/:userId', apiKeyAuth, async (req, res) => {
     const { userId } = req.params;
     const validatedData = updateUserInfoSchema.parse({ ...req.body, userId });
     
-    await storage.syncExternalUser(validatedData);
+    // Map the validated data to our user schema
+    const userData = {
+      id: validatedData.userId,
+      username: validatedData.username,
+      contact_email: validatedData.email,
+      role: validatedData.role,
+      clinic_name: validatedData.organizationName,
+    };
+    
+    await storage.syncExternalUser(userData);
     
     res.json({
       success: true,

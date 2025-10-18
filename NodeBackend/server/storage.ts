@@ -6,6 +6,10 @@ export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  upsertUser(userData: any): Promise<User>;
+  syncExternalUser(userData: any): Promise<User>;
+  getAllUsers(): Promise<User[]>;
+  updateUserLastLogin(userId: string): Promise<void>;
 
   // Message methods
   getMessage(id: string): Promise<Message | undefined>;
@@ -14,6 +18,7 @@ export interface IStorage {
   updateMessage(id: string, updates: Partial<Message>): Promise<Message | undefined>;
   getMessagesCount(filters?: { status?: string; phoneNumber?: string; type?: string }): Promise<number>;
   getMessagesByDateRange(startDate: Date, endDate: Date): Promise<Message[]>;
+  getMessageHistory(filters: { sessionId?: string; userId?: string; limit: number; offset: number }): Promise<Message[]>;
 
   // System log methods
   getSystemLogs(limit?: number, offset?: number): Promise<SystemLog[]>;
@@ -135,6 +140,56 @@ export class MemStorage implements IStorage {
     };
     this.systemLogs.set(id, log);
     return log;
+  }
+
+  // Additional user methods
+  async upsertUser(userData: any): Promise<User> {
+    const existingUser = await this.getUser(userData.id);
+    if (existingUser) {
+      // Update existing user
+      const updated = { ...existingUser, ...userData };
+      this.users.set(userData.id, updated);
+      return updated;
+    } else {
+      // Create new user
+      return await this.createUser(userData);
+    }
+  }
+
+  async syncExternalUser(userData: any): Promise<User> {
+    return await this.upsertUser(userData);
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return Array.from(this.users.values());
+  }
+
+  async updateUserLastLogin(userId: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (user) {
+      user.last_login_at = new Date();
+      this.users.set(userId, user);
+    }
+  }
+
+  async getMessageHistory(filters: { sessionId?: string; userId?: string; limit: number; offset: number }): Promise<Message[]> {
+    let messages = Array.from(this.messages.values());
+
+    if (filters.sessionId) {
+      messages = messages.filter(msg => msg.sessionId === filters.sessionId);
+    }
+    if (filters.userId) {
+      messages = messages.filter(msg => msg.userId === filters.userId);
+    }
+
+    // Sort by creation date (newest first)
+    messages.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    return messages.slice(filters.offset, filters.offset + filters.limit);
   }
 }
 
