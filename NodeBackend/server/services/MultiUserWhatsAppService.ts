@@ -140,7 +140,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
       
       // If max attempts reached, cleanup
       if (s.reconnectAttempts >= this.maxReconnectAttempts) {
-        await this.cleanupUserSession(sessionId);
+        await this.cleanupUserSession(userId);
       }
     }
   }
@@ -699,12 +699,12 @@ export class MultiUserWhatsAppService extends EventEmitter {
         await userSession.socket.logout();
       }
 
-      await this.cleanupUserSession(sessionId);
-      console.log(`🔌 Disconnected session: ${sessionId} for ${userSession.userName} (${userSession.clinicName})`);
+      await this.cleanupUserSession(userId);
+      console.log(`🔌 Disconnected session for ${userSession.userName} (${userSession.clinicName})`);
       return true;
 
     } catch (error: any) {
-      console.error(`❌ Failed to disconnect session ${sessionId}:`, error);
+      console.error(`❌ Failed to disconnect session ${userId}:`, error);
       return false;
     }
   }
@@ -888,14 +888,14 @@ export class MultiUserWhatsAppService extends EventEmitter {
   /**
    * Get specific user session status
    */
-  getUserSessionStatus(sessionId: string): {
+  getUserSessionStatus(userId: string): {
     isConnected: boolean;
     phoneNumber?: string;
     lastActivity?: Date;
     userName?: string;
     clinicName?: string;
   } | null {
-    const session = this.userSessions.get(sessionId);
+    const session = this.userSessionsByUser.get(userId);
     if (!session) return null;
 
     return {
@@ -945,7 +945,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
     connectedSessions: number;
     userBreakdown: Array<{ userId: string; userName: string; sessionCount: number; connectedCount: number }>;
   } {
-    const sessions = Array.from(this.userSessions.values());
+    const sessions = Array.from(this.userSessionsByUser.values());
     const userStats = new Map<string, { userName: string; sessionCount: number; connectedCount: number }>();
 
     sessions.forEach(session => {
@@ -955,8 +955,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
         connectedCount: 0
       };
       
-      existing.sessionCount++;
-      if (session.isConnected) existing.connectedCount++;
+      existing.sessionCount = 1; // Only 1 session per user now
+      if (session.isConnected) existing.connectedCount = 1;
       
       userStats.set(session.userId, existing);
     });
@@ -978,13 +978,13 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Force cleanup all sessions (admin function)
    */
   async forceCleanupAllSessions(): Promise<number> {
-    const sessions = Array.from(this.userSessions.entries());
+    const sessions = Array.from(this.userSessionsByUser.entries());
     let cleanedCount = 0;
 
-    for (const [sessionId, session] of sessions) {
+    for (const [userId, session] of sessions) {
       if (!session.isAuthenticated) {
-        log(`🧹 Force cleaning session: ${sessionId} (${session.userName})`);
-        await this.cleanupUserSession(sessionId);
+        log(`🧹 Force cleaning session: ${userId} (${session.userName})`);
+        await this.cleanupUserSession(userId);
         cleanedCount++;
       }
     }
@@ -1041,25 +1041,25 @@ export class MultiUserWhatsAppService extends EventEmitter {
     error?: string 
   }> {
     try {
-      const userSessions = Array.from(this.userSessions.values())
-        .filter(session => session.userId === userId);
+      const userSession = this.userSessionsByUser.get(userId);
 
-      if (userSessions.length === 0) {
+      if (!userSession) {
         return {
           success: false,
           error: 'No sessions found for this user'
         };
       }
 
-      const sessionInfo = userSessions.map(session => ({
-        sessionId: session.sessionId,
-        isConnected: session.isConnected,
-        isAuthenticated: session.isAuthenticated,
-        phoneNumber: session.phoneNumber,
-        lastActivity: session.lastActivity,
-        reconnectAttempts: session.reconnectAttempts,
-        hasQrCode: !!session.qrCode
-      }));
+      const sessionInfo = [{
+        sessionId: userSession.sessionId,
+        isConnected: userSession.isConnected,
+        isAuthenticated: userSession.isAuthenticated,
+        phoneNumber: userSession.phoneNumber,
+        lastActivity: userSession.lastActivity,
+        reconnectAttempts: userSession.reconnectAttempts,
+        hasQrCode: !!userSession.qrCode,
+        status: userSession.status
+      }];
 
       return {
         success: true,
@@ -1078,9 +1078,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Public cleanup method for admin use
    */
   async adminCleanupInactiveSessions(): Promise<{ cleaned: number; message: string }> {
-    const initialCount = this.userSessions.size;
+    const initialCount = this.userSessionsByUser.size;
     await this.cleanupInactiveSessions();
-    const finalCount = this.userSessions.size;
+    const finalCount = this.userSessionsByUser.size;
     const cleanedCount = initialCount - finalCount;
     
     return {
@@ -1093,7 +1093,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Get system summary for admin monitoring
    */
   async getSystemSummary() {
-    const sessions = Array.from(this.userSessions.values());
+    const sessions = Array.from(this.userSessionsByUser.values());
     
     return {
       totalSessions: sessions.length,
@@ -1109,20 +1109,19 @@ export class MultiUserWhatsAppService extends EventEmitter {
   private getUserSessionBreakdown() {
     const userStats = new Map<string, any>();
     
-    for (const session of Array.from(this.userSessions.values())) {
+    for (const session of Array.from(this.userSessionsByUser.values())) {
       if (!userStats.has(session.userId)) {
         userStats.set(session.userId, {
           userId: session.userId,
           userName: session.userName,
-          sessionCount: 0,
+          sessionCount: 1, // Always 1 per user now
           connectedCount: 0
         });
       }
       
       const stats = userStats.get(session.userId)!;
-      stats.sessionCount++;
       if (session.isAuthenticated) {
-        stats.connectedCount++;
+        stats.connectedCount = 1; // Always 1 or 0 per user now
       }
     }
     
