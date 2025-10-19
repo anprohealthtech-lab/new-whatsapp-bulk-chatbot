@@ -41,8 +41,9 @@ interface SessionStrategy {
 export class MultiUserWhatsAppService extends EventEmitter {
   private userSessions: Map<string, UserSession> = new Map();
   private readonly sessionsDir = './server/sessions/multi_user';
-  private readonly maxReconnectAttempts = 3;
+  private readonly maxReconnectAttempts = 5;
   private readonly maxGlobalSessions = 15;
+  private userLastConnectionAttempt: Map<string, number> = new Map(); // Track last connection attempt per user
 
   private readonly SESSION_STRATEGIES: Record<string, SessionStrategy> = {
     business_hours: {
@@ -102,6 +103,18 @@ export class MultiUserWhatsAppService extends EventEmitter {
     strategyName: keyof typeof this.SESSION_STRATEGIES = 'on_demand'
   ): Promise<{ success: boolean; sessionId?: string; qrCode?: string; error?: string }> {
     try {
+      // Rate limiting: Prevent rapid successive connection attempts for same user
+      const lastAttempt = this.userLastConnectionAttempt.get(userId);
+      const now = Date.now();
+      const minInterval = 15000; // 15 seconds minimum between attempts
+      
+      if (lastAttempt && (now - lastAttempt) < minInterval) {
+        const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
+        throw new Error(`Rate limited: Please wait ${waitTime} seconds before attempting to connect again`);
+      }
+      
+      this.userLastConnectionAttempt.set(userId, now);
+      
       // Cleanup inactive sessions first to free up space
       await this.cleanupInactiveSessions();
 
@@ -350,17 +363,75 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
     if (connection === 'close') {
       userSession.isConnected = false;
-      const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+      const disconnectReason = (lastDisconnect?.error as Boom)?.output?.statusCode;
+      const shouldReconnect = disconnectReason !== DisconnectReason.loggedOut;
+      
+      // Handle specific disconnect reasons
+      let disconnectMessage = '';
+      switch (disconnectReason) {
+        case DisconnectReason.badSession:
+          disconnectMessage = 'Bad session - authentication required';
+          break;
+        case DisconnectReason.connectionClosed:
+          disconnectMessage = 'Connection closed normally';
+          break;
+        case DisconnectReason.connectionLost:
+          disconnectMessage = 'Connection lost - network issue';
+          break;
+        case DisconnectReason.connectionReplaced:
+          disconnectMessage = 'Connection replaced by another session';
+          break;
+        case DisconnectReason.loggedOut:
+          disconnectMessage = 'Logged out - re-authentication required';
+          break;
+        case DisconnectReason.restartRequired:
+          disconnectMessage = 'Restart required - normal after authentication';
+          break;
+        case DisconnectReason.timedOut:
+          disconnectMessage = 'Connection timed out';
+          break;
+        default:
+          disconnectMessage = `Unknown reason: ${disconnectReason}`;
+      }
 
-      console.log(`🔌 ${userSession.userName} (${userSession.clinicName}) disconnected. Should reconnect: ${shouldReconnect}`);
+      console.log(`🔌 ${userSession.userName} (${userSession.clinicName}) disconnected: ${disconnectMessage}. Should reconnect: ${shouldReconnect}`);
 
       if (shouldReconnect && userSession.reconnectAttempts < this.maxReconnectAttempts) {
         userSession.reconnectAttempts++;
-        console.log(`🔄 Attempting to reconnect ${userSession.userName} (${userSession.clinicName}) - Attempt ${userSession.reconnectAttempts}`);
         
-        setTimeout(() => {
-          this.reconnectUser(userSession.userId);
-        }, 5000);
+        // Special handling for restart required (normal after authentication)
+        let baseDelay = 10000; // 10 seconds base delay
+        if (disconnectReason === DisconnectReason.restartRequired) {
+          baseDelay = 5000; // Faster reconnection for restart required
+          console.log(`🔄 Authentication successful, restarting connection for ${userSession.userName}`);
+        }
+        
+        // Implement exponential backoff to prevent server overload
+        const exponentialDelay = baseDelay * Math.pow(2, userSession.reconnectAttempts - 1);
+        const maxDelay = 120000; // 2 minutes maximum
+        const delay = Math.min(exponentialDelay, maxDelay);
+        
+        console.log(`🔄 Scheduling reconnect for ${userSession.userName} (${userSession.clinicName}) - Attempt ${userSession.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay/1000}s`);
+        
+        setTimeout(async () => {
+          try {
+            console.log(`🔌 Starting reconnection for ${userSession.userName} (${userSession.clinicName})`);
+            
+            // Clean up current session first
+            await this.cleanupUserSession(sessionId);
+            
+            // Create new session with rate limiting
+            const reconnectResult = await this.createUserSession(userSession.userId, 'on_demand');
+            
+            if (reconnectResult.success) {
+              console.log(`✅ Successfully reconnected ${userSession.userName} (${userSession.clinicName})`);
+            } else {
+              console.log(`❌ Failed to reconnect ${userSession.userName}: ${reconnectResult.error}`);
+            }
+          } catch (error) {
+            console.error(`💥 Error during reconnection for ${userSession.userName}:`, error);
+          }
+        }, delay);
       } else {
         console.log(`❌ Max reconnection attempts reached for ${userSession.userName} (${userSession.clinicName})`);
         await this.cleanupUserSession(sessionId);
