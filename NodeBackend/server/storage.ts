@@ -30,6 +30,8 @@ export interface IStorage {
   getAllActiveWhatsAppSessions(): Promise<any[]>;
   updateUserWhatsAppSession(userId: string, updates: any): Promise<void>;
   createWhatsAppSession(session: any): Promise<any>;
+  getWhatsAppSessionsByUserId(userId: string): Promise<any[]>;
+  deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -70,6 +72,14 @@ export class MemStorage implements IStorage {
 
   async createWhatsAppSession(session: any): Promise<any> {
     return session;
+  }
+
+  async getWhatsAppSessionsByUserId(userId: string): Promise<any[]> {
+    return [];
+  }
+
+  async deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void> {
+    // Stub implementation for memory storage
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {

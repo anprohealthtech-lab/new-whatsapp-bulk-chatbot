@@ -200,7 +200,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Handle user reconnection with exponential backoff and persistent auth reuse
    */
   private async attemptUserReconnection(sessionId: string): Promise<void> {
-    const userSession = this.userSessions.get(sessionId);
+    // Find session by sessionId across all users
+    const userSession = Array.from(this.userSessionsByUser.values())
+      .find(s => s.sessionId === sessionId);
     if (!userSession) return;
 
     userSession.reconnectAttempts++;
@@ -271,6 +273,72 @@ export class MultiUserWhatsAppService extends EventEmitter {
     
     return await userLock.add(async () => {
       try {
+        // 0) Try in-memory first - check for active authenticated session
+        const existing = Array.from(this.userSessionsByUser.values())
+          .find(s => s.userId === userId && s.isAuthenticated && s.isConnected);
+        
+        if (existing) {
+          console.log(`🔄 Found existing authenticated session for ${existing.userName}: ${existing.sessionId}`);
+          return {
+            success: true,
+            sessionId: existing.sessionId,
+            // IMPORTANT: do not include qrCode when already authenticated
+          };
+        }
+
+        // 1) Try DB (user might have an authenticated session from a previous process)
+        const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
+        // Prefer the most recently updated authenticated+active one
+        const reusable = dbSessions
+          ?.filter(s => s.isAuthenticated && s.isActive && s.sessionData)
+          ?.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())[0];
+
+        if (reusable) {
+          console.log(`🔄 Rehydrating session from DB for user ${userId}: ${reusable.id}`);
+          
+          // Parse sessionData to get authPath
+          let sessionData;
+          try {
+            sessionData = typeof reusable.sessionData === 'string' 
+              ? JSON.parse(reusable.sessionData) 
+              : reusable.sessionData;
+          } catch (e) {
+            console.warn(`⚠️ Could not parse sessionData for ${userId}, using default authPath`);
+            sessionData = {};
+          }
+          
+          // Rehydrate in memory from authPath without emitting QR
+          const authPath = sessionData.authPath || path.join(this.authBaseDir, userId);
+          const { state, saveCreds } = await useMultiFileAuthState(authPath);
+          const { version } = await fetchLatestBaileysVersion();
+
+          const user = await storage.getUser(userId);
+          const userSession: UserSession = {
+            userId,
+            userName: user?.name ?? 'Unknown',
+            clinicName: user?.clinic_name ?? 'Unknown Clinic',
+            socket: null,
+            isConnected: false,
+            isAuthenticated: true, // we trust DB status; will be confirmed on open
+            phoneNumber: reusable.phoneNumber || undefined,
+            lastActivity: new Date(reusable.lastActivity || Date.now()),
+            qrCode: undefined,
+            authPath,
+            reconnectAttempts: 0,
+            sessionId: reusable.id, // use the database id field
+            status: 'restarting',
+            isPairing: false
+          };
+
+          const socket = await this.createSocketForUser(userSession, state, version, saveCreds);
+          userSession.socket = socket;
+          this.userSessionsByUser.set(userId, userSession); // Map by userId
+
+          // Return existing session — NO QR
+          return { success: true, sessionId: reusable.id };
+        }
+
+        // 2) No existing session found - proceed with new session creation
         // Check if user already has a session - keyed by userId for robustness
         const existingSession = this.userSessionsByUser.get(userId);
         
@@ -379,14 +447,14 @@ export class MultiUserWhatsAppService extends EventEmitter {
       // Store session keyed by userId for robustness
       this.userSessionsByUser.set(userId, userSession);
 
-      // Save session to database
+      // Save session to database with consistent authPath
       await storage.createWhatsAppSession({
         id: sessionId,
         userId,
         sessionId,
         isActive: true,
         strategy: strategyName,
-        sessionData: { authPath, strategy: strategyName },
+        sessionData: JSON.stringify({ authPath: `auth/${userId}`, strategy: strategyName }),
         createdAt: new Date(),
         updatedAt: new Date()
       });
@@ -476,6 +544,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
         lastActivity: new Date(), 
         updatedAt: new Date()
       });
+
+      // Deactivate all other sessions for this user to prevent pile-up
+      await storage.deactivateOtherUserSessions(s.userId, s.sessionId);
       
       this.emit('user-connected', { 
         sessionId, 

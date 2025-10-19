@@ -54,6 +54,7 @@ export const whatsappSessions = pgTable('whatsapp_sessions', {
   connectionAttempts: integer('connection_attempts').default(0),
   lastActivity: timestamp('last_activity'),
   createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
   expiresAt: timestamp('expires_at'),
   reconnectCount: integer('reconnect_count').default(0),
   sessionStrategy: text('session_strategy').default('business_hours'), // 'business_hours' | 'always_on' | 'on_demand'
@@ -123,14 +124,6 @@ export const systemLogs = pgTable('system_logs', {
   component: text('component'), // 'whatsapp' | 'api' | 'auth' | 'system'
   metadata: text('metadata'), // JSON string
   createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const systemLogs = pgTable("system_logs", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  level: text("level").notNull(), // 'info', 'warning', 'error'
-  message: text("message").notNull(),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({

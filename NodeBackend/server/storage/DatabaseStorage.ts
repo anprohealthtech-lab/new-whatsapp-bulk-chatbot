@@ -263,4 +263,37 @@ export class DatabaseStorage implements IStorage {
       throw new Error(`Failed to create WhatsApp session: ${error.message}`);
     }
   }
+
+  async getWhatsAppSessionsByUserId(userId: string): Promise<any[]> {
+    try {
+      const sessions = await db.select()
+        .from(whatsappSessions)
+        .where(eq(whatsappSessions.userId, userId))
+        .orderBy(desc(whatsappSessions.updatedAt));
+
+      return sessions;
+    } catch (error: any) {
+      console.error('Error getting sessions by userId:', error);
+      throw new Error(`Failed to get sessions by userId: ${error.message}`);
+    }
+  }
+
+  async deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void> {
+    try {
+      await db.update(whatsappSessions)
+        .set({
+          isActive: false,
+          updatedAt: new Date()
+        })
+        .where(and(
+          eq(whatsappSessions.userId, userId),
+          sql`${whatsappSessions.id} != ${currentSessionId}`
+        ));
+
+      console.log(`🔄 Deactivated other sessions for user ${userId} except ${currentSessionId}`);
+    } catch (error: any) {
+      console.error('Error deactivating other user sessions:', error);
+      throw new Error(`Failed to deactivate other user sessions: ${error.message}`);
+    }
+  }
 }
