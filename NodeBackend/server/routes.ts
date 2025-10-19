@@ -569,6 +569,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // External API routes for integration with other apps
   app.use('/api', externalApiRoutes);
 
+  // ===========================================
+  // ADMIN ENDPOINTS - Session Management
+  // ===========================================
+
+  // Get system session status for healthcare admins
+  app.get('/api/admin/sessions/status', async (req, res) => {
+    try {
+      const summary = await multiUserWhatsAppService.getSystemSummary();
+      const maxGlobal = parseInt(process.env.WHATSAPP_MAX_GLOBAL_SESSIONS || '25');
+      const maxPerUser = parseInt(process.env.WHATSAPP_MAX_SESSIONS_PER_USER || '3');
+      
+      res.json({
+        success: true,
+        data: {
+          globalSessions: {
+            active: summary.totalSessions,
+            connected: summary.connectedSessions,
+            limit: maxGlobal,
+            utilization: Math.round((summary.totalSessions / maxGlobal) * 100),
+            availableSlots: maxGlobal - summary.totalSessions
+          },
+          userSessions: summary.userBreakdown.map((user: any) => ({
+            userId: user.userId,
+            userName: user.userName,
+            activeSessions: user.sessionCount,
+            connectedSessions: user.connectedCount,
+            maxAllowed: maxPerUser,
+            status: user.connectedCount > 0 ? 'connected' : 'disconnected',
+            utilization: Math.round((user.sessionCount / maxPerUser) * 100)
+          })),
+          systemHealth: {
+            uptime: Math.round(process.uptime()),
+            memoryUsage: process.memoryUsage(),
+            timestamp: new Date().toISOString(),
+            environment: process.env.NODE_ENV || 'development'
+          },
+          configuration: {
+            maxGlobalSessions: maxGlobal,
+            maxSessionsPerUser: maxPerUser,
+            cleanupInterval: parseInt(process.env.SESSION_CLEANUP_INTERVAL || '300000'),
+            inactiveTimeout: parseInt(process.env.INACTIVE_SESSION_TIMEOUT || '300000'),
+            qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '60000')
+          }
+        }
+      });
+    } catch (error: any) {
+      log(`Admin session status error: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get session status',
+        error: error.message
+      });
+    }
+  });
+
+  // Force cleanup endpoint for admins
+  app.post('/api/admin/sessions/cleanup', async (req, res) => {
+    try {
+      const { userId, force } = req.body;
+      
+      if (userId) {
+        // Cleanup specific user sessions
+        const user = await storage.getUser(userId);
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+        
+        await multiUserWhatsAppService.disconnectUser(userId);
+        log(`Admin cleanup: Disconnected all sessions for user ${user.name}`);
+        
+        res.json({
+          success: true,
+          message: `Cleaned up sessions for user ${user.name} (${userId})`
+        });
+      } else if (force) {
+        // Force global cleanup of all inactive sessions
+        const beforeCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
+        await multiUserWhatsAppService.forceCleanupAllSessions();
+        const afterCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
+        
+        log(`Admin force cleanup: ${beforeCount - afterCount} sessions removed`);
+        
+        res.json({
+          success: true,
+          message: `Force cleanup completed: ${beforeCount - afterCount} sessions removed`,
+          beforeCount,
+          afterCount
+        });
+      } else {
+        // Standard cleanup
+        const beforeCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
+        // This would need to be implemented in the service
+        await multiUserWhatsAppService.cleanupInactiveSessions();
+        const afterCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
+        
+        log(`Admin cleanup: ${beforeCount - afterCount} inactive sessions removed`);
+        
+        res.json({
+          success: true,
+          message: `Cleanup completed: ${beforeCount - afterCount} inactive sessions removed`,
+          beforeCount,
+          afterCount
+        });
+      }
+    } catch (error: any) {
+      log(`Admin cleanup error: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        message: 'Cleanup failed',
+        error: error.message
+      });
+    }
+  });
+
   // Cleanup old files periodically
   setInterval(async () => {
     await fileService.cleanupOldFiles(24); // Clean files older than 24 hours

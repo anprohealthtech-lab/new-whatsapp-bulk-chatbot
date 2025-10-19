@@ -8,6 +8,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
+import { log } from '../utils.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -71,10 +72,15 @@ export class MultiUserWhatsAppService extends EventEmitter {
     super();
     this.ensureSessionsDirectory();
     
-    // Clean up inactive sessions every 30 minutes
-    setInterval(() => this.cleanupInactiveSessions(), 30 * 60 * 1000);
+    // Clean up inactive sessions with configurable interval
+    const cleanupInterval = parseInt(process.env.SESSION_CLEANUP_INTERVAL || '300000'); // 5 minutes default
+    setInterval(() => this.cleanupInactiveSessions(), cleanupInterval);
     
-    console.log('🚀 Multi-User WhatsApp Service initialized');
+    log(`🚀 Multi-User WhatsApp Service initialized with limits:`);
+    log(`   - Max Global Sessions: ${this.maxGlobalSessions}`);
+    log(`   - Max Sessions Per User: ${process.env.WHATSAPP_MAX_SESSIONS_PER_USER || 3}`);
+    log(`   - Cleanup Interval: ${cleanupInterval/1000}s`);
+    log(`   - Inactive Timeout: ${process.env.INACTIVE_SESSION_TIMEOUT || 300000}ms`);
   }
 
   private ensureSessionsDirectory() {
@@ -96,9 +102,21 @@ export class MultiUserWhatsAppService extends EventEmitter {
     strategyName: keyof typeof this.SESSION_STRATEGIES = 'on_demand'
   ): Promise<{ success: boolean; sessionId?: string; qrCode?: string; error?: string }> {
     try {
-      // Check global session limit
-      if (this.userSessions.size >= this.maxGlobalSessions) {
-        throw new Error('Maximum global sessions reached. Please try again later.');
+      // Cleanup inactive sessions first to free up space
+      await this.cleanupInactiveSessions();
+
+      // Check global session limit after cleanup
+      const activeSessions = Array.from(this.userSessions.values()).filter(s => s.isConnected);
+      if (activeSessions.length >= this.maxGlobalSessions) {
+        // Try to cleanup disconnected sessions aggressively
+        await this.cleanupInactiveSessions();
+        
+        // Recheck after aggressive cleanup
+        const stillActiveSessions = Array.from(this.userSessions.values()).filter(s => s.isConnected);
+        if (stillActiveSessions.length >= this.maxGlobalSessions) {
+          log(`⚠️ Global session limit reached: ${stillActiveSessions.length}/${this.maxGlobalSessions}`);
+          throw new Error(`Healthcare system at capacity. Active sessions: ${stillActiveSessions.length}/${this.maxGlobalSessions}. Please try again in a few minutes.`);
+        }
       }
 
       // Get user from database
@@ -107,12 +125,15 @@ export class MultiUserWhatsAppService extends EventEmitter {
         throw new Error(`User ${userId} not found`);
       }
 
-      // Check if user already has an active session
-      const existingSessions = Array.from(this.userSessions.values())
+      // Check if user already has active sessions
+      const userActiveSessions = Array.from(this.userSessions.values())
         .filter(session => session.userId === userId && session.isConnected);
       
-      if (existingSessions.length >= (user.max_sessions || 2)) {
-        throw new Error(`User ${user.name} has reached maximum sessions limit (${user.max_sessions || 2})`);
+      const maxUserSessions = parseInt(process.env.WHATSAPP_MAX_SESSIONS_PER_USER || '3');
+      if (userActiveSessions.length >= maxUserSessions) {
+        // Cleanup oldest user session to make room
+        await this.cleanupOldestUserSessionForUser(userId);
+        log(`🧹 Cleaned up oldest session for user ${user.name} to make room for new connection`);
       }
 
       // Create session directory for this user
@@ -421,7 +442,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
         content: processedContent,
         type: 'text',
         status: 'sent',
-        messageId: result?.key?.id,
+        messageId: result?.key?.id || undefined,
         templateData,
         createdAt: new Date()
       });
@@ -430,7 +451,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       return {
         success: true,
-        messageId: result?.key?.id
+        messageId: result?.key?.id || undefined
       };
 
     } catch (error: any) {
@@ -491,7 +512,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
         content: processedCaption,
         type: 'document',
         status: 'sent',
-        messageId: result?.key?.id,
+        messageId: result?.key?.id || undefined,
         filePath,
         templateData,
         createdAt: new Date()
@@ -501,7 +522,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       return {
         success: true,
-        messageId: result?.key?.id
+        messageId: result?.key?.id || undefined
       };
 
     } catch (error: any) {
@@ -592,20 +613,63 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Cleanup inactive sessions
+   * Cleanup inactive sessions with configurable timeout
    */
   private async cleanupInactiveSessions() {
     const now = new Date();
-    const inactiveThreshold = 30 * 60 * 1000; // 30 minutes
+    const inactiveThreshold = parseInt(process.env.INACTIVE_SESSION_TIMEOUT || '300000'); // 5 minutes default
+    let cleanedCount = 0;
 
-    for (const [sessionId, session] of this.userSessions.entries()) {
+    // Use Array.from to avoid iterator issues
+    const sessions = Array.from(this.userSessions.entries());
+    
+    for (const [sessionId, session] of sessions) {
       const timeSinceLastActivity = now.getTime() - session.lastActivity.getTime();
       
       if (!session.isConnected && timeSinceLastActivity > inactiveThreshold) {
-        console.log(`🧹 Cleaning up inactive session for ${session.userName}: ${sessionId}`);
+        log(`🧹 Cleaning up inactive session for ${session.userName}: ${sessionId} (inactive for ${Math.round(timeSinceLastActivity/1000)}s)`);
         await this.cleanupUserSession(sessionId);
+        cleanedCount++;
       }
     }
+
+    if (cleanedCount > 0) {
+      log(`🧹 Cleanup completed: ${cleanedCount} sessions removed. Active sessions: ${this.userSessions.size}/${this.maxGlobalSessions}`);
+    }
+  }
+
+  /**
+   * Cleanup oldest session for a specific user to make room for new one
+   */
+  private async cleanupOldestUserSessionForUser(userId: string) {
+    const userSessions = Array.from(this.userSessions.entries())
+      .filter(([_, session]) => session.userId === userId)
+      .sort(([_, a], [__, b]) => a.lastActivity.getTime() - b.lastActivity.getTime());
+
+    if (userSessions.length > 0) {
+      const [oldestSessionId, oldestSession] = userSessions[0];
+      log(`🧹 Removing oldest session for ${oldestSession.userName}: ${oldestSessionId}`);
+      await this.cleanupUserSession(oldestSessionId);
+    }
+  }
+
+  /**
+   * Force cleanup all disconnected sessions (emergency cleanup)
+   */
+  private async forceCleanupDisconnectedSessions() {
+    const sessions = Array.from(this.userSessions.entries());
+    let cleanedCount = 0;
+
+    for (const [sessionId, session] of sessions) {
+      if (!session.isConnected && !session.isAuthenticated) {
+        log(`🧹 Force cleaning disconnected session: ${sessionId} (${session.userName})`);
+        await this.cleanupUserSession(sessionId);
+        cleanedCount++;
+      }
+    }
+
+    log(`🧹 Force cleanup completed: ${cleanedCount} disconnected sessions removed`);
+    return cleanedCount;
   }
 
   /**
@@ -744,6 +808,65 @@ export class MultiUserWhatsAppService extends EventEmitter {
         connectedCount: stats.connectedCount
       }))
     };
+  }
+
+  /**
+   * Force cleanup all sessions (admin function)
+   */
+  async forceCleanupAllSessions(): Promise<number> {
+    const sessions = Array.from(this.userSessions.entries());
+    let cleanedCount = 0;
+
+    for (const [sessionId, session] of sessions) {
+      if (!session.isAuthenticated) {
+        log(`🧹 Force cleaning session: ${sessionId} (${session.userName})`);
+        await this.cleanupUserSession(sessionId);
+        cleanedCount++;
+      }
+    }
+
+    log(`🧹 Force cleanup completed: ${cleanedCount} sessions removed`);
+    return cleanedCount;
+  }
+
+  /**
+   * Get system summary for admin monitoring
+   */
+  async getSystemSummary() {
+    const sessions = Array.from(this.userSessions.values());
+    
+    return {
+      totalSessions: sessions.length,
+      activeSessions: sessions.filter(s => s.isConnected).length,
+      connectedSessions: sessions.filter(s => s.isAuthenticated).length,
+      userBreakdown: this.getUserSessionBreakdown()
+    };
+  }
+
+  /**
+   * Get user session breakdown for monitoring
+   */
+  private getUserSessionBreakdown() {
+    const userStats = new Map<string, any>();
+    
+    for (const session of this.userSessions.values()) {
+      if (!userStats.has(session.userId)) {
+        userStats.set(session.userId, {
+          userId: session.userId,
+          userName: session.userName,
+          sessionCount: 0,
+          connectedCount: 0
+        });
+      }
+      
+      const stats = userStats.get(session.userId)!;
+      stats.sessionCount++;
+      if (session.isAuthenticated) {
+        stats.connectedCount++;
+      }
+    }
+    
+    return Array.from(userStats.values());
   }
 }
 
