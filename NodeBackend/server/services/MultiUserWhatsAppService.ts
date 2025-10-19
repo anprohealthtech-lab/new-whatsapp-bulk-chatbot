@@ -273,21 +273,39 @@ export class MultiUserWhatsAppService extends EventEmitter {
     
     return await userLock.add(async () => {
       try {
-        // 0) Try in-memory first - check for active authenticated session
-        const existing = Array.from(this.userSessionsByUser.values())
-          .find(s => s.userId === userId && s.isAuthenticated && s.isConnected);
+        console.log(`🔍 GET-OR-CREATE: Checking session for user ${userId}`);
+        
+        // 0) Try in-memory first - check for ANY existing session for this user
+        const existing = this.userSessionsByUser.get(userId);
         
         if (existing) {
-          console.log(`🔄 Found existing authenticated session for ${existing.userName}: ${existing.sessionId}`);
-          return {
-            success: true,
-            sessionId: existing.sessionId,
-            // IMPORTANT: do not include qrCode when already authenticated
-          };
+          console.log(`🔍 Found existing session: status=${existing.status}, auth=${existing.isAuthenticated}, connected=${existing.isConnected}`);
+          // If authenticated and connected, return immediately
+          if (existing.isAuthenticated && existing.isConnected) {
+            console.log(`🔄 Found existing authenticated session for ${existing.userName}: ${existing.sessionId}`);
+            return {
+              success: true,
+              sessionId: existing.sessionId,
+              // IMPORTANT: do not include qrCode when already authenticated
+            };
+          }
+          
+          // If session exists but not connected, return the session (might be pairing)
+          if (existing.status === 'pairing' || existing.status === 'connecting' || existing.status === 'restarting') {
+            console.log(`🔄 Found existing ${existing.status} session for ${existing.userName}: ${existing.sessionId}`);
+            return {
+              success: true,
+              sessionId: existing.sessionId,
+              qrCode: existing.qrCode
+            };
+          }
         }
 
         // 1) Try DB (user might have an authenticated session from a previous process)
+        console.log(`🔍 Checking database for user ${userId}...`);
         const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
+        console.log(`🔍 Found ${dbSessions?.length || 0} DB sessions for user ${userId}`);
+        
         // Prefer the most recently updated authenticated+active one
         const reusable = dbSessions
           ?.filter(s => s.isAuthenticated && s.isActive && s.sessionData)
@@ -336,26 +354,18 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
           // Return existing session — NO QR
           return { success: true, sessionId: reusable.id };
+        } else if (dbSessions?.length > 0) {
+          console.log(`⚠️ Found ${dbSessions.length} DB sessions but none reusable - will create new session`);
+          // Cleanup old inactive sessions
+          for (const oldSession of dbSessions.filter(s => !s.isActive)) {
+            console.log(`🧹 Cleaning up old inactive DB session: ${oldSession.id}`);
+          }
         }
 
         // 2) No existing session found - proceed with new session creation
-        // Check if user already has a session - keyed by userId for robustness
-        const existingSession = this.userSessionsByUser.get(userId);
+        console.log(`🆕 Creating new session for user ${userId}`);
         
-        if (existingSession && !isReconnection) {
-          const { status, isConnected, sessionId, qrCode } = existingSession;
-          
-          // Guard against states: pairing, restarting, connected
-          if (status === 'pairing' || status === 'restarting' || status === 'connected' || isConnected) {
-            console.log(`🔄 User ${userId} already has active session: ${sessionId} (${status})`);
-            return {
-              success: true,
-              sessionId,
-              qrCode
-            };
-          }
-        }
-      // Rate limiting: Only apply to new connections, not reconnections (can be disabled for dev)
+        // Rate limiting: Only apply to new connections, not reconnections (can be disabled for dev)
       const enableRateLimiting = process.env.ENABLE_RATE_LIMITING !== 'false';
       
       if (!isReconnection && enableRateLimiting) {
