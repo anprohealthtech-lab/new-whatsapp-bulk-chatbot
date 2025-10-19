@@ -532,6 +532,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Refresh QR code for user (if experiencing timeout issues)
+  app.post('/api/users/:userId/whatsapp/refresh-qr', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      
+      // Disconnect current session and create new one with fresh QR
+      await multiUserWhatsAppService.disconnectUser(userId);
+      
+      // Wait a moment for cleanup
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Create new session with fresh QR
+      const result = await multiUserWhatsAppService.createUserSession(userId, 'on_demand');
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: 'Fresh QR code generated. New connection initiated.',
+          data: {
+            sessionId: result.sessionId,
+            note: 'QR code will be sent via WebSocket events. Please scan within 2 minutes.'
+          }
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: 'Failed to generate fresh QR code',
+          error: result.error
+        });
+      }
+    } catch (error: any) {
+      log(`Refresh QR error for user ${req.params.userId}: ${error.message}`);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to refresh QR code',
+        error: error.message
+      });
+    }
+  });
+
   // Disconnect specific user from WhatsApp
   app.delete('/api/users/:userId/whatsapp/session', async (req, res) => {
     try {
