@@ -906,6 +906,103 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
+   * Refresh QR code for existing session without creating new session
+   */
+  async refreshQRCode(userId: string): Promise<{ success: boolean; qrCode?: string; error?: string }> {
+    try {
+      // Find existing session for this user
+      const userSession = Array.from(this.userSessions.values())
+        .find(session => session.userId === userId && !session.isAuthenticated);
+
+      if (!userSession) {
+        return {
+          success: false,
+          error: 'No pending authentication session found for this user. Please create a new session.'
+        };
+      }
+
+      // If there's already a QR code, return it
+      if (userSession.qrCode) {
+        console.log(`📱 Returning existing QR code for ${userSession.userName}`);
+        return {
+          success: true,
+          qrCode: userSession.qrCode
+        };
+      }
+
+      // If no QR code available, the session might need to be recreated
+      return {
+        success: false,
+        error: 'No QR code available. Session may need to be recreated.'
+      };
+
+    } catch (error: any) {
+      console.error(`❌ Failed to refresh QR for user ${userId}:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get active session info for a user
+   */
+  async getUserSessionInfo(userId: string): Promise<{ 
+    success: boolean; 
+    sessionInfo?: any; 
+    error?: string 
+  }> {
+    try {
+      const userSessions = Array.from(this.userSessions.values())
+        .filter(session => session.userId === userId);
+
+      if (userSessions.length === 0) {
+        return {
+          success: false,
+          error: 'No sessions found for this user'
+        };
+      }
+
+      const sessionInfo = userSessions.map(session => ({
+        sessionId: session.sessionId,
+        isConnected: session.isConnected,
+        isAuthenticated: session.isAuthenticated,
+        phoneNumber: session.phoneNumber,
+        lastActivity: session.lastActivity,
+        reconnectAttempts: session.reconnectAttempts,
+        hasQrCode: !!session.qrCode
+      }));
+
+      return {
+        success: true,
+        sessionInfo
+      };
+
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Public cleanup method for admin use
+   */
+  async adminCleanupInactiveSessions(): Promise<{ cleaned: number; message: string }> {
+    const initialCount = this.userSessions.size;
+    await this.cleanupInactiveSessions();
+    const finalCount = this.userSessions.size;
+    const cleanedCount = initialCount - finalCount;
+    
+    return {
+      cleaned: cleanedCount,
+      message: `Cleaned up ${cleanedCount} inactive sessions`
+    };
+  }
+
+  /**
    * Get system summary for admin monitoring
    */
   async getSystemSummary() {

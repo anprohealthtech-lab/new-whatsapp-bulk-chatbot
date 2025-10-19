@@ -537,11 +537,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { userId } = req.params;
       
-      // Disconnect current session and create new one with fresh QR
+      // First try to get existing QR code
+      const qrResult = await multiUserWhatsAppService.refreshQRCode(userId);
+      
+      if (qrResult.success && qrResult.qrCode) {
+        return res.json({
+          success: true,
+          message: 'Existing QR code available',
+          data: {
+            qrCode: qrResult.qrCode,
+            note: 'This is an existing QR code. Scan within 2 minutes.'
+          }
+        });
+      }
+      
+      // If no existing QR, create fresh session with rate limiting protection
       await multiUserWhatsAppService.disconnectUser(userId);
       
-      // Wait a moment for cleanup
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait for cleanup and rate limiting
+      await new Promise(resolve => setTimeout(resolve, 3000));
       
       // Create new session with fresh QR
       const result = await multiUserWhatsAppService.createUserSession(userId, 'on_demand');
@@ -552,7 +566,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message: 'Fresh QR code generated. New connection initiated.',
           data: {
             sessionId: result.sessionId,
-            note: 'QR code will be sent via WebSocket events. Please scan within 2 minutes.'
+            qrCode: result.qrCode,
+            note: 'New QR code generated. Please scan within 2 minutes.'
           }
         });
       } else {
@@ -704,7 +719,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Standard cleanup
         const beforeCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
         // This would need to be implemented in the service
-        await multiUserWhatsAppService.cleanupInactiveSessions();
+        await multiUserWhatsAppService.adminCleanupInactiveSessions();
         const afterCount = (await multiUserWhatsAppService.getSystemSummary()).totalSessions;
         
         log(`Admin cleanup: ${beforeCount - afterCount} inactive sessions removed`);
