@@ -104,11 +104,13 @@ export class MultiUserWhatsAppService extends EventEmitter {
     isReconnection: boolean = false
   ): Promise<{ success: boolean; sessionId?: string; qrCode?: string; error?: string }> {
     try {
-      // Rate limiting: Only apply to new connections, not reconnections
-      if (!isReconnection) {
+      // Rate limiting: Only apply to new connections, not reconnections (can be disabled for dev)
+      const enableRateLimiting = process.env.ENABLE_RATE_LIMITING !== 'false';
+      
+      if (!isReconnection && enableRateLimiting) {
         const lastAttempt = this.userLastConnectionAttempt.get(userId);
         const now = Date.now();
-        const minInterval = 15000; // 15 seconds minimum between NEW connection attempts
+        const minInterval = parseInt(process.env.RATE_LIMIT_INTERVAL || '15000'); // 15 seconds default
         
         if (lastAttempt && (now - lastAttempt) < minInterval) {
           const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
@@ -116,6 +118,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
         }
         
         this.userLastConnectionAttempt.set(userId, now);
+      }
+      
+      // Log rate limiting status for debugging
+      if (!enableRateLimiting) {
+        console.log(`🚀 Rate limiting DISABLED for development - allowing immediate connections`);
       }
       
       // Cleanup inactive sessions first to free up space
