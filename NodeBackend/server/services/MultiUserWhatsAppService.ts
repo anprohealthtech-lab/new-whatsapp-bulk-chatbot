@@ -100,20 +100,23 @@ export class MultiUserWhatsAppService extends EventEmitter {
    */
   async createUserSession(
     userId: string, 
-    strategyName: keyof typeof this.SESSION_STRATEGIES = 'on_demand'
+    strategyName: keyof typeof this.SESSION_STRATEGIES = 'on_demand',
+    isReconnection: boolean = false
   ): Promise<{ success: boolean; sessionId?: string; qrCode?: string; error?: string }> {
     try {
-      // Rate limiting: Prevent rapid successive connection attempts for same user
-      const lastAttempt = this.userLastConnectionAttempt.get(userId);
-      const now = Date.now();
-      const minInterval = 15000; // 15 seconds minimum between attempts
-      
-      if (lastAttempt && (now - lastAttempt) < minInterval) {
-        const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
-        throw new Error(`Rate limited: Please wait ${waitTime} seconds before attempting to connect again`);
+      // Rate limiting: Only apply to new connections, not reconnections
+      if (!isReconnection) {
+        const lastAttempt = this.userLastConnectionAttempt.get(userId);
+        const now = Date.now();
+        const minInterval = 15000; // 15 seconds minimum between NEW connection attempts
+        
+        if (lastAttempt && (now - lastAttempt) < minInterval) {
+          const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
+          throw new Error(`Rate limited: Please wait ${waitTime} seconds before attempting to connect again`);
+        }
+        
+        this.userLastConnectionAttempt.set(userId, now);
       }
-      
-      this.userLastConnectionAttempt.set(userId, now);
       
       // Cleanup inactive sessions first to free up space
       await this.cleanupInactiveSessions();
@@ -420,8 +423,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
             // Clean up current session first
             await this.cleanupUserSession(sessionId);
             
-            // Create new session with rate limiting
-            const reconnectResult = await this.createUserSession(userSession.userId, 'on_demand');
+            // Create new session - this is a reconnection, bypass rate limiting
+            const reconnectResult = await this.createUserSession(userSession.userId, 'on_demand', true);
             
             if (reconnectResult.success) {
               console.log(`✅ Successfully reconnected ${userSession.userName} (${userSession.clinicName})`);

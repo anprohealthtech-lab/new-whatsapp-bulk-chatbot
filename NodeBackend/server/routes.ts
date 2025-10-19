@@ -557,8 +557,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Wait for cleanup and rate limiting
       await new Promise(resolve => setTimeout(resolve, 3000));
       
-      // Create new session with fresh QR
-      const result = await multiUserWhatsAppService.createUserSession(userId, 'on_demand');
+      // Create new session with fresh QR - this is a refresh, so bypass rate limiting
+      const result = await multiUserWhatsAppService.createUserSession(userId, 'on_demand', true);
       
       if (result.success) {
         res.json({
