@@ -7,7 +7,7 @@ name: whatsapp-lims-app
 services:
 - name: whatsapp-lims-api
   github:
-    repo: anprohealthtech-lab/WHATSAPP-PERSISTENT
+    repo: anprohealthtech-lab/WHATSAPP-PERSISTENT-multi-users
     branch: master
   build_command: npm run build
   run_command: npm start
