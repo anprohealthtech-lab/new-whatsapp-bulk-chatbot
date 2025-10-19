@@ -84,7 +84,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   private generateSessionId(userId: string): string {
-    return `user_${userId}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    // Generate a proper UUID instead of the composite string
+    return crypto.randomUUID();
   }
 
   /**
