@@ -165,16 +165,21 @@ export class MultiUserWhatsAppService extends EventEmitter {
       const { version, isLatest } = await fetchLatestBaileysVersion();
       console.log(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest} for ${user.name}`);
 
-      // Create WhatsApp socket for this specific user
+      // Create WhatsApp socket for this specific user with mobile-optimized settings
       const socket = makeWASocket({
         version,
         auth: state,
         printQRInTerminal: false,
         browser: [`${user.clinic_name || 'LIMS'}-${user.name}`, 'Chrome', '1.0.0'],
         generateHighQualityLinkPreview: true,
-        defaultQueryTimeoutMs: 60000,
-        connectTimeoutMs: 20000,
-        keepAliveIntervalMs: 30000,
+        defaultQueryTimeoutMs: 120000, // 2 minutes for mobile connections
+        connectTimeoutMs: 60000,       // 1 minute connection timeout  
+        keepAliveIntervalMs: 25000,    // Frequent keep-alive for mobile
+        qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '120000'), // 2 minutes QR timeout
+        retryRequestDelayMs: 250,      // Faster retries
+        maxMsgRetryCount: 5,           // More retry attempts
+        shouldSyncHistoryMessage: () => false, // Skip history sync for faster connection
+        shouldIgnoreJid: () => false,
       });
 
       userSession.socket = socket;
@@ -849,7 +854,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   private getUserSessionBreakdown() {
     const userStats = new Map<string, any>();
     
-    for (const session of this.userSessions.values()) {
+    for (const session of Array.from(this.userSessions.values())) {
       if (!userStats.has(session.userId)) {
         userStats.set(session.userId, {
           userId: session.userId,
