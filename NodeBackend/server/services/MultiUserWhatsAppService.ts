@@ -42,31 +42,35 @@ interface SessionStrategy {
 }
 
 export class MultiUserWhatsAppService extends EventEmitter {
-  private userSessionsByUser: Map<string, UserSession> = new Map(); // Key by userId for robustness
-  private readonly authBaseDir = './auth'; // Persistent auth storage per user
+  private userSessionsByUser: Map<string, UserSession> = new Map(); // Key by userId
+  private readonly authBaseDir = './auth';
   private readonly maxReconnectAttempts = 5;
   private readonly maxGlobalSessions = 15;
   private userLocks = new Map<string, PQueue>(); // Per-user mutex locks
-  private userLastConnectionAttempt: Map<string, number> = new Map(); // Track last connection attempt per user
+  private userLastConnectionAttempt: Map<string, number> = new Map();
+  private connectionHealthMap = new Map<
+    string,
+    { connects: number; disconnects: number; lastStableConnection?: Date }
+  >();
 
   private readonly SESSION_STRATEGIES: Record<string, SessionStrategy> = {
     business_hours: {
       name: 'business_hours',
-      duration: 8 * 60 * 60 * 1000, // 8 hours
+      duration: 8 * 60 * 60 * 1000,
       autoReconnect: true,
       maxReconnectAttempts: 5,
       businessHoursOnly: true
     },
     always_on: {
       name: 'always_on',
-      duration: 24 * 60 * 60 * 1000, // 24 hours
+      duration: 24 * 60 * 60 * 1000,
       autoReconnect: true,
       maxReconnectAttempts: 10,
       businessHoursOnly: false
     },
     on_demand: {
       name: 'on_demand',
-      duration: 2 * 60 * 60 * 1000, // 2 hours
+      duration: 2 * 60 * 60 * 1000,
       autoReconnect: false,
       maxReconnectAttempts: 3,
       businessHoursOnly: false
@@ -76,15 +80,15 @@ export class MultiUserWhatsAppService extends EventEmitter {
   constructor() {
     super();
     this.ensureAuthDirectory();
-    
+
     // Clean up inactive sessions with configurable interval
-    const cleanupInterval = parseInt(process.env.SESSION_CLEANUP_INTERVAL || '300000'); // 5 minutes default
+    const cleanupInterval = parseInt(process.env.SESSION_CLEANUP_INTERVAL || '300000'); // 5 min
     setInterval(() => this.cleanupInactiveSessions(), cleanupInterval);
-    
+
     log(`🚀 Multi-User WhatsApp Service initialized with limits:`);
     log(`   - Max Global Sessions: ${this.maxGlobalSessions}`);
     log(`   - Max Sessions Per User: ${process.env.WHATSAPP_MAX_SESSIONS_PER_USER || 3}`);
-    log(`   - Cleanup Interval: ${cleanupInterval/1000}s`);
+    log(`   - Cleanup Interval: ${cleanupInterval / 1000}s`);
     log(`   - Inactive Timeout: ${process.env.INACTIVE_SESSION_TIMEOUT || 300000}ms`);
   }
 
@@ -102,53 +106,71 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * In-place reconnect that reuses same sessionId and authPath - NO new session creation
+   * In-place reconnect that reuses same sessionId and authPath
    */
   private async reconnectInPlace(userId: string) {
     const s = this.userSessionsByUser.get(userId);
-    if (!s) return;
+    if (!s) {
+      console.log(`⚠️ No session found for reconnection: ${userId}`);
+      return;
+    }
 
-    console.log(`🔄 In-place reconnect for ${s.userName} (user: ${userId})`);
+    // Don't reconnect if already connected or in-flight
+    if (s.isConnected || s.status === 'connecting' || s.status === 'restarting') {
+      console.log(`⚠️ ${s.userName}: Skipping reconnect - already ${s.status} (connected: ${s.isConnected})`);
+      return;
+    }
+
+    console.log(`🔄 In-place reconnect for ${s.userName} (user: ${userId}) | Attempt: ${s.reconnectAttempts + 1}`);
 
     try {
+      s.status = 'restarting';
+      s.reconnectAttempts++;
+      s.lastActivity = new Date();
+
       // Close old socket if any
       if (s.socket) {
-        try { 
-          s.socket.end(undefined); 
+        try {
+          s.socket.end(undefined);
         } catch (e) {
           console.log(`⚠️ Error ending old socket: ${(e as Error).message}`);
         }
         s.socket = null;
       }
 
-      // Reuse same authPath - this is key for persistent auth
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
       const { state, saveCreds } = await useMultiFileAuthState(s.authPath);
       const { version } = await fetchLatestBaileysVersion();
-      
-      s.status = 'restarting';
-      s.reconnectAttempts++;
-      s.lastActivity = new Date();
 
-      // Create new socket with existing session data
       const sock = await this.createSocketForUser(s, state, version, saveCreds);
       s.socket = sock;
 
-      console.log(`🔌 Reconnected ${s.userName} in-place (auth preserved)`);
-
+      console.log(`🔌 Reconnected ${s.userName} in-place (auth preserved) | Attempt: ${s.reconnectAttempts}`);
     } catch (error) {
       console.error(`❌ In-place reconnect failed for ${s.userName}:`, error);
-      
-      // If max attempts reached, cleanup
+
+      s.status = 'disconnected';
+
       if (s.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.log(
+          `💀 Max reconnect attempts reached for ${s.userName} (${s.reconnectAttempts}/${this.maxReconnectAttempts})`
+        );
         await this.cleanupUserSession(userId);
+      } else {
+        const backoffDelay = Math.min(60000 * Math.pow(2, s.reconnectAttempts - 1), 300000); // up to 5m
+        console.log(`🔄 Scheduling retry for ${s.userName} in ${Math.round(backoffDelay / 1000)}s`);
+
+        clearTimeout(s.reconnectTimeout);
+        s.reconnectTimeout = setTimeout(() => this.reconnectInPlace(userId), backoffDelay);
       }
     }
   }
 
   private async createSocketForUser(
-    userSession: UserSession, 
-    authState: AuthenticationState, 
-    version: any, 
+    userSession: UserSession,
+    authState: AuthenticationState,
+    version: any,
     saveCreds: () => Promise<void>
   ): Promise<WASocket> {
     console.log(`🔌 Creating socket for ${userSession.userName} with persistent auth: ${userSession.authPath}`);
@@ -159,26 +181,31 @@ export class MultiUserWhatsAppService extends EventEmitter {
       printQRInTerminal: false,
       browser: [`${userSession.clinicName || 'LIMS'}-${userSession.userName}`, 'Chrome', '1.0.0'],
       generateHighQualityLinkPreview: true,
-      // Enhanced timeout configuration
       defaultQueryTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
       connectTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
-      keepAliveIntervalMs: parseInt(process.env.WHATSAPP_KEEP_ALIVE_INTERVAL || '30000'),
+      keepAliveIntervalMs: parseInt(process.env.WHATSAPP_KEEP_ALIVE_INTERVAL || '25000'),
       qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '300000'),
-      retryRequestDelayMs: 500,
-      maxMsgRetryCount: 3,
+      retryRequestDelayMs: 1000,
+      maxMsgRetryCount: 2,
       markOnlineOnConnect: false,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       shouldIgnoreJid: () => false,
-      getMessage: async () => undefined
+      getMessage: async () => undefined,
+      emitOwnEvents: false,
+      fireInitQueries: true,
+      transactionOpts: {
+        maxCommitRetries: 2,
+        delayBetweenTriesMs: 1000
+      }
     });
 
-    // Handle connection updates with proper pairing state tracking
+    // Connection updates
     socket.ev.on('connection.update', async (update: any) => {
       await this.handleUserConnectionUpdate(userSession.userId, update);
     });
 
-    // Handle credentials update - CRITICAL for persistent auth
+    // Auth creds persistence
     socket.ev.on('creds.update', async () => {
       try {
         await saveCreds();
@@ -188,7 +215,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
       }
     });
 
-    // Handle messages for this user
+    // Incoming messages
     socket.ev.on('messages.upsert', async (m) => {
       await this.handleUserMessages(userSession.userId, m);
     });
@@ -200,26 +227,22 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Handle user reconnection with exponential backoff and persistent auth reuse
    */
   private async attemptUserReconnection(sessionId: string): Promise<void> {
-    // Find session by sessionId across all users
-    const userSession = Array.from(this.userSessionsByUser.values())
-      .find(s => s.sessionId === sessionId);
+    const userSession = Array.from(this.userSessionsByUser.values()).find((s) => s.sessionId === sessionId);
     if (!userSession) return;
 
     userSession.reconnectAttempts++;
     userSession.status = 'restarting';
 
-    const backoffDelay = Math.min(1000 * Math.pow(2, userSession.reconnectAttempts - 1), 30000); // Max 30s
-    
-    console.log(`🔄 Reconnecting ${userSession.userName} (attempt ${userSession.reconnectAttempts}/${this.maxReconnectAttempts}) in ${backoffDelay}ms`);
+    const backoffDelay = Math.min(1000 * Math.pow(2, userSession.reconnectAttempts - 1), 30000); // max 30s
 
-    // Clear any existing timeout
-    if (userSession.reconnectTimeout) {
-      clearTimeout(userSession.reconnectTimeout);
-    }
+    console.log(
+      `🔄 Reconnecting ${userSession.userName} (attempt ${userSession.reconnectAttempts}/${this.maxReconnectAttempts}) in ${backoffDelay}ms`
+    );
+
+    if (userSession.reconnectTimeout) clearTimeout(userSession.reconnectTimeout);
 
     userSession.reconnectTimeout = setTimeout(async () => {
       try {
-        // Clean up old socket
         if (userSession.socket) {
           try {
             userSession.socket.end(undefined);
@@ -229,10 +252,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
           userSession.socket = null;
         }
 
-        // Wait for cleanup
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
 
-        // Recreate socket using SAME auth directory (persistent auth)
         const { state, saveCreds } = await useMultiFileAuthState(userSession.authPath);
         const { version } = await fetchLatestBaileysVersion();
 
@@ -240,23 +261,21 @@ export class MultiUserWhatsAppService extends EventEmitter {
         userSession.socket = newSocket;
 
         console.log(`🔌 Recreated socket for ${userSession.userName} using persistent auth: ${userSession.authPath}`);
-
       } catch (error) {
         console.error(`💥 Reconnection failed for ${userSession.userName}:`, error);
-        
+
         if (userSession.reconnectAttempts >= this.maxReconnectAttempts) {
           console.log(`💀 Max reconnection attempts reached for ${userSession.userName}`);
-          await this.cleanupUserSession(sessionId);
+          // FIX: cleanup by userId (not sessionId)
+          await this.cleanupUserSession(userSession.userId);
         } else {
-          // Try again with longer delay
           await this.attemptUserReconnection(sessionId);
         }
       }
     }, backoffDelay);
   }
 
-  private generateSessionId(userId: string): string {
-    // Generate a proper UUID instead of the composite string
+  private generateSessionId(): string {
     return crypto.randomUUID();
   }
 
@@ -264,68 +283,59 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Create individual WhatsApp session for a specific user
    */
   async createUserSession(
-    userId: string, 
+    userId: string,
     strategyName: keyof typeof this.SESSION_STRATEGIES = 'on_demand',
     isReconnection: boolean = false
   ): Promise<{ success: boolean; sessionId?: string; qrCode?: string; error?: string }> {
-    // Use per-user mutex to prevent concurrent session creation
     const userLock = this.getUserLock(userId);
-    
+
     return await userLock.add(async () => {
       try {
         console.log(`🔍 GET-OR-CREATE: Checking session for user ${userId}`);
-        
-        // 0) Try in-memory first - check for ANY existing session for this user
+
+        // In-memory
         const existing = this.userSessionsByUser.get(userId);
-        
         if (existing) {
-          console.log(`🔍 Found existing session: status=${existing.status}, auth=${existing.isAuthenticated}, connected=${existing.isConnected}`);
-          // If authenticated and connected, return immediately
+          console.log(
+            `🔍 Found existing session: status=${existing.status}, auth=${existing.isAuthenticated}, connected=${existing.isConnected}`
+          );
           if (existing.isAuthenticated && existing.isConnected) {
             console.log(`🔄 Found existing authenticated session for ${existing.userName}: ${existing.sessionId}`);
-            return {
-              success: true,
-              sessionId: existing.sessionId,
-              // IMPORTANT: do not include qrCode when already authenticated
-            };
+            return { success: true, sessionId: existing.sessionId };
           }
-          
-          // If session exists but not connected, return the session (might be pairing)
-          if (existing.status === 'pairing' || existing.status === 'connecting' || existing.status === 'restarting') {
+          if (
+            existing.status === 'pairing' ||
+            existing.status === 'connecting' ||
+            existing.status === 'restarting'
+          ) {
             console.log(`🔄 Found existing ${existing.status} session for ${existing.userName}: ${existing.sessionId}`);
-            return {
-              success: true,
-              sessionId: existing.sessionId,
-              qrCode: existing.qrCode
-            };
+            return { success: true, sessionId: existing.sessionId, qrCode: existing.qrCode };
           }
         }
 
-        // 1) Try DB (user might have an authenticated session from a previous process)
+        // DB
         console.log(`🔍 Checking database for user ${userId}...`);
         const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
         console.log(`🔍 Found ${dbSessions?.length || 0} DB sessions for user ${userId}`);
-        
-        // Prefer the most recently updated authenticated+active one
+
         const reusable = dbSessions
-          ?.filter(s => s.isAuthenticated && s.isActive && s.sessionData)
-          ?.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())[0];
+          ?.filter((s: any) => s.isAuthenticated && s.isActive && s.sessionData)
+          ?.sort(
+            (a: any, b: any) =>
+              new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+          )[0];
 
         if (reusable) {
           console.log(`🔄 Rehydrating session from DB for user ${userId}: ${reusable.id}`);
-          
-          // Parse sessionData to get authPath
-          let sessionData;
+
+          let sessionData: any;
           try {
-            sessionData = typeof reusable.sessionData === 'string' 
-              ? JSON.parse(reusable.sessionData) 
-              : reusable.sessionData;
-          } catch (e) {
+            sessionData = typeof reusable.sessionData === 'string' ? JSON.parse(reusable.sessionData) : reusable.sessionData;
+          } catch {
             console.warn(`⚠️ Could not parse sessionData for ${userId}, using default authPath`);
             sessionData = {};
           }
-          
-          // Rehydrate in memory from authPath without emitting QR
+
           const authPath = sessionData.authPath || path.join(this.authBaseDir, userId);
           const { state, saveCreds } = await useMultiFileAuthState(authPath);
           const { version } = await fetchLatestBaileysVersion();
@@ -337,208 +347,180 @@ export class MultiUserWhatsAppService extends EventEmitter {
             clinicName: user?.clinic_name ?? 'Unknown Clinic',
             socket: null,
             isConnected: false,
-            isAuthenticated: true, // we trust DB status; will be confirmed on open
+            isAuthenticated: true, // trust DB; will be confirmed on open
             phoneNumber: reusable.phoneNumber || undefined,
             lastActivity: new Date(reusable.lastActivity || Date.now()),
             qrCode: undefined,
             authPath,
             reconnectAttempts: 0,
-            sessionId: reusable.id, // use the database id field
+            sessionId: reusable.id,
             status: 'restarting',
             isPairing: false
           };
 
           const socket = await this.createSocketForUser(userSession, state, version, saveCreds);
           userSession.socket = socket;
-          this.userSessionsByUser.set(userId, userSession); // Map by userId
+          this.userSessionsByUser.set(userId, userSession);
 
-          // Return existing session — NO QR
           return { success: true, sessionId: reusable.id };
         } else if (dbSessions?.length > 0) {
           console.log(`⚠️ Found ${dbSessions.length} DB sessions but none reusable - will create new session`);
-          // Cleanup old inactive sessions
-          for (const oldSession of dbSessions.filter(s => !s.isActive)) {
-            console.log(`🧹 Cleaning up old inactive DB session: ${oldSession.id}`);
+        }
+
+        // New session
+        console.log(`🆕 Creating new session for user ${userId}`);
+
+        const enableRateLimiting = process.env.ENABLE_RATE_LIMITING !== 'false';
+        if (!isReconnection && enableRateLimiting) {
+          const lastAttempt = this.userLastConnectionAttempt.get(userId);
+          const now = Date.now();
+          const minInterval = parseInt(process.env.RATE_LIMIT_INTERVAL || '15000');
+
+          if (lastAttempt && now - lastAttempt < minInterval) {
+            const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
+            throw new Error(`Rate limited: Please wait ${waitTime} seconds before attempting to connect again`);
+          }
+          this.userLastConnectionAttempt.set(userId, now);
+        } else if (!enableRateLimiting) {
+          console.log(`🚀 Rate limiting DISABLED for development - allowing immediate connections`);
+        }
+
+        await this.cleanupInactiveSessions();
+
+        const activeSessions = Array.from(this.userSessionsByUser.values()).filter((s) => s.isConnected);
+        if (activeSessions.length >= this.maxGlobalSessions) {
+          await this.cleanupInactiveSessions();
+          const stillActive = Array.from(this.userSessionsByUser.values()).filter((s) => s.isConnected);
+          if (stillActive.length >= this.maxGlobalSessions) {
+            log(`⚠️ Global session limit reached: ${stillActive.length}/${this.maxGlobalSessions}`);
+            throw new Error(
+              `Healthcare system at capacity. Active sessions: ${stillActive.length}/${this.maxGlobalSessions}. Please try again in a few minutes.`
+            );
           }
         }
 
-        // 2) No existing session found - proceed with new session creation
-        console.log(`🆕 Creating new session for user ${userId}`);
-        
-        // Rate limiting: Only apply to new connections, not reconnections (can be disabled for dev)
-      const enableRateLimiting = process.env.ENABLE_RATE_LIMITING !== 'false';
-      
-      if (!isReconnection && enableRateLimiting) {
-        const lastAttempt = this.userLastConnectionAttempt.get(userId);
-        const now = Date.now();
-        const minInterval = parseInt(process.env.RATE_LIMIT_INTERVAL || '15000'); // 15 seconds default
-        
-        if (lastAttempt && (now - lastAttempt) < minInterval) {
-          const waitTime = Math.ceil((minInterval - (now - lastAttempt)) / 1000);
-          throw new Error(`Rate limited: Please wait ${waitTime} seconds before attempting to connect again`);
+        const user = await storage.getUser(userId);
+        if (!user) throw new Error(`User ${userId} not found`);
+
+        // If user already has an in-memory session (connected), free it up
+        const userActiveSession = this.userSessionsByUser.get(userId);
+        const maxUserSessions = parseInt(process.env.WHATSAPP_MAX_SESSIONS_PER_USER || '3');
+        if (userActiveSession?.isConnected) {
+          await this.cleanupOldestUserSessionForUser(userId);
+          log(`🧹 Cleaned up oldest session for user ${user.name} to make room for new connection`);
         }
-        
-        this.userLastConnectionAttempt.set(userId, now);
-      }
-      
-      // Log rate limiting status for debugging
-      if (!enableRateLimiting) {
-        console.log(`🚀 Rate limiting DISABLED for development - allowing immediate connections`);
-      }
-      
-      // Cleanup inactive sessions first to free up space
-      await this.cleanupInactiveSessions();
 
-      // Check global session limit after cleanup
-      const activeSessions = Array.from(this.userSessionsByUser.values()).filter(s => s.isConnected);
-      if (activeSessions.length >= this.maxGlobalSessions) {
-        // Try to cleanup disconnected sessions aggressively
-        await this.cleanupInactiveSessions();
-        
-        // Recheck after aggressive cleanup
-        const stillActiveSessions = Array.from(this.userSessionsByUser.values()).filter(s => s.isConnected);
-        if (stillActiveSessions.length >= this.maxGlobalSessions) {
-          log(`⚠️ Global session limit reached: ${stillActiveSessions.length}/${this.maxGlobalSessions}`);
-          throw new Error(`Healthcare system at capacity. Active sessions: ${stillActiveSessions.length}/${this.maxGlobalSessions}. Please try again in a few minutes.`);
-        }
-      }
+        const sessionId = this.generateSessionId();
+        const authPath = path.join(this.authBaseDir, userId);
+        fs.mkdirSync(authPath, { recursive: true });
 
-      // Get user from database
-      const user = await storage.getUser(userId);
-      if (!user) {
-        throw new Error(`User ${userId} not found`);
-      }
+        const strategy = this.SESSION_STRATEGIES[strategyName];
 
-      // Check if user already has active sessions
-      const userActiveSessions = Array.from(this.userSessionsByUser.values())
-        .filter(session => session.userId === userId && session.isConnected);
-      
-      const maxUserSessions = parseInt(process.env.WHATSAPP_MAX_SESSIONS_PER_USER || '3');
-      if (userActiveSessions.length >= maxUserSessions) {
-        // Cleanup oldest user session to make room
-        await this.cleanupOldestUserSessionForUser(userId);
-        log(`🧹 Cleaned up oldest session for user ${user.name} to make room for new connection`);
-      }
+        const userSession: UserSession = {
+          userId,
+          userName: user.name,
+          clinicName: user.clinic_name || 'Unknown Clinic',
+          socket: null,
+          isConnected: false,
+          isAuthenticated: false,
+          lastActivity: new Date(),
+          authPath,
+          reconnectAttempts: 0,
+          sessionId,
+          isPairing: false,
+          status: 'disconnected'
+        };
 
-      // Create persistent auth directory for this user
-      const sessionId = this.generateSessionId(userId);
-      const authPath = path.join(this.authBaseDir, userId);
-      fs.mkdirSync(authPath, { recursive: true });
+        const { state, saveCreds } = await useMultiFileAuthState(authPath);
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest} for ${user.name}`);
 
-      const strategy = this.SESSION_STRATEGIES[strategyName];
+        const socket = await this.createSocketForUser(userSession, state, version, saveCreds);
+        userSession.socket = socket;
 
-      // Initialize user session
-      const userSession: UserSession = {
-        userId,
-        userName: user.name,
-        clinicName: user.clinic_name || 'Unknown Clinic',
-        socket: null,
-        isConnected: false,
-        isAuthenticated: false,
-        lastActivity: new Date(),
-        authPath,
-        reconnectAttempts: 0,
-        sessionId,
-        isPairing: false,
-        status: 'disconnected'
-      };
+        this.userSessionsByUser.set(userId, userSession);
 
-      // Create Baileys auth state for this user
-      const { state, saveCreds } = await useMultiFileAuthState(authPath);
+        await storage.createWhatsAppSession({
+          id: sessionId,
+          userId,
+          sessionId,
+          isActive: true,
+          strategy: strategyName,
+          sessionData: JSON.stringify({ authPath: `auth/${userId}`, strategy: strategyName }),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
 
-      // Get latest Baileys version
-      const { version, isLatest } = await fetchLatestBaileysVersion();
-      console.log(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest} for ${user.name}`);
+        console.log(`🔌 Created WhatsApp session for user: ${user.name} (${user.clinic_name}) - Session: ${sessionId}`);
 
-      // Create socket with persistent auth pattern and proper connection handling  
-      const socket = await this.createSocketForUser(userSession, state, version, saveCreds);
-      userSession.socket = socket;
-      
-      // Store session keyed by userId for robustness
-      this.userSessionsByUser.set(userId, userSession);
+        return { success: true, sessionId };
+      } catch (error: any) {
+        console.error(`❌ Failed to create session for user ${userId}:`, error);
 
-      // Save session to database with consistent authPath
-      await storage.createWhatsAppSession({
-        id: sessionId,
-        userId,
-        sessionId,
-        isActive: true,
-        strategy: strategyName,
-        sessionData: JSON.stringify({ authPath: `auth/${userId}`, strategy: strategyName }),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
+        await storage.createSystemLog({
+          level: 'error',
+          message: `Failed to create WhatsApp session for user ${userId}`,
+          service: 'whatsapp',
+          userId,
+          metadata: { error: (error as Error).message }
+        });
 
-      console.log(`🔌 Created WhatsApp session for user: ${user.name} (${user.clinic_name}) - Session: ${sessionId}`);
-      
-      // Return immediately - events will deliver QR/connected status via WebSocket
-      return {
-        success: true,
-        sessionId
-      };
-
-    } catch (error: any) {
-      console.error(`❌ Failed to create session for user ${userId}:`, error);
-      
-      await storage.createSystemLog({
-        level: 'error',
-        message: `Failed to create WhatsApp session for user ${userId}`,
-        service: 'whatsapp',
-        userId,
-        metadata: { error: (error as Error).message }
-      });
-
-      return {
-        success: false,
-        error: (error as Error).message
-      };
+        return { success: false, error: (error as Error).message };
       }
     });
   }
 
   /**
-   * Handle connection updates for specific user - Clean single state machine
+   * Handle connection updates for a specific user
    */
   private async handleUserConnectionUpdate(userId: string, update: any) {
     const s = this.userSessionsByUser.get(userId);
     if (!s) return;
-    
-    const { sessionId } = s; // Get sessionId from stored session
 
+    const { sessionId } = s;
     const { connection, lastDisconnect, qr } = update;
-    const code = (lastDisconnect?.error as any)?.output?.statusCode ?? 
-                 (lastDisconnect?.error as any)?.status ?? 0;
+    const code =
+      (lastDisconnect?.error as any)?.output?.statusCode ??
+      (lastDisconnect?.error as any)?.status ??
+      0;
 
-    console.log(`📱 ${s.userName}: ${connection || 'unknown'} | QR: ${!!qr} | Code: ${code} | Status: ${s.status}`);
+    console.log(
+      `📱 ${s.userName}: ${connection || 'unknown'} | QR: ${!!qr} | Code: ${code} | Status: ${s.status} | Attempts: ${s.reconnectAttempts}`
+    );
 
-    // 1) QR: only before auth
+    // 1) QR (only before auth)
     if (qr && !s.isAuthenticated && !s.isPairing) {
       s.isPairing = true;
       s.status = 'pairing';
       s.qrCode = qr;
-      
+
       const url = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(qr)}`;
-      
-      await storage.updateUserWhatsAppSession(s.userId, { 
-        qrCodeData: url, 
-        updatedAt: new Date() 
+      await storage.updateUserWhatsAppSession(s.userId, {
+        qrCodeData: url,
+        updatedAt: new Date()
       });
-      
-      this.emit('user-qr-code', { 
-        sessionId, 
-        userId: s.userId, 
-        userName: s.userName, 
-        clinicName: s.clinicName, 
-        qrCode: url, 
-        rawQR: qr 
+
+      this.emit('user-qr-code', {
+        sessionId,
+        userId: s.userId,
+        userName: s.userName,
+        clinicName: s.clinicName,
+        qrCode: url,
+        rawQR: qr
       });
-      
+
       console.log(`🔲 QR code generated for ${s.userName} - ${s.clinicName}`);
       return;
     }
 
-    // 2) OPEN: mark authenticated and stop QR forever
+    // 2) OPEN
     if (connection === 'open') {
+      if (s.reconnectTimeout) {
+        clearTimeout(s.reconnectTimeout);
+        s.reconnectTimeout = undefined;
+        console.log(`🔄 Cleared pending reconnect for ${s.userName}`);
+      }
+
       s.isConnected = true;
       s.isAuthenticated = true;
       s.isPairing = false;
@@ -548,30 +530,31 @@ export class MultiUserWhatsAppService extends EventEmitter {
       s.reconnectAttempts = 0;
 
       await storage.updateUserWhatsAppSession(s.userId, {
-        isAuthenticated: true, 
-        isActive: true, 
-        phoneNumber: s.phoneNumber, 
-        lastActivity: new Date(), 
+        isAuthenticated: true,
+        isActive: true,
+        phoneNumber: s.phoneNumber,
+        lastActivity: new Date(),
         updatedAt: new Date()
       });
 
-      // Deactivate all other sessions for this user to prevent pile-up
       await storage.deactivateOtherUserSessions(s.userId, s.sessionId);
-      
-      this.emit('user-connected', { 
-        sessionId, 
-        userId: s.userId, 
-        userName: s.userName, 
-        clinicName: s.clinicName, 
-        phoneNumber: s.phoneNumber, 
-        isAuthenticated: true 
+
+      this.emit('user-connected', {
+        sessionId,
+        userId: s.userId,
+        userName: s.userName,
+        clinicName: s.clinicName,
+        phoneNumber: s.phoneNumber,
+        isAuthenticated: true
       });
-      
-      console.log(`✅ ${s.userName} (${s.clinicName}) connected! Phone: ${s.phoneNumber}`);
+
+      console.log(
+        `✅ ${s.userName} (${s.clinicName}) connected! Phone: ${s.phoneNumber} | Attempts reset to 0`
+      );
       return;
     }
 
-    // 3) CLOSE: compute strategy
+    // 3) CLOSE
     if (connection === 'close') {
       s.isConnected = false;
       s.isPairing = false;
@@ -579,36 +562,97 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       const loggedOut = code === DisconnectReason.loggedOut;
       const restartRequired = code === DisconnectReason.restartRequired || code === 515;
-      const shouldReconnect = !loggedOut;
+      const connectionLost = code === DisconnectReason.connectionLost;
+      const timedOut = code === DisconnectReason.timedOut;
 
-      await storage.updateUserWhatsAppSession(s.userId, { 
-        isAuthenticated: !loggedOut, 
-        isActive: shouldReconnect, 
-        updatedAt: new Date() 
-      });
-      
-      this.emit('user-disconnected', { 
-        sessionId, 
-        userId: s.userId, 
-        userName: s.userName, 
-        clinicName: s.clinicName, 
-        shouldReconnect 
+      const shouldReconnect =
+        !loggedOut && (restartRequired || connectionLost || timedOut || code === 0);
+
+      if (code === 0 && s.reconnectAttempts >= 2) {
+        console.log(
+          `⚠️ ${s.userName}: Multiple Code: 0 disconnections (${s.reconnectAttempts}) - using extended delays`
+        );
+      }
+
+      await storage.updateUserWhatsAppSession(s.userId, {
+        isAuthenticated: !loggedOut,
+        isActive: shouldReconnect,
+        updatedAt: new Date()
       });
 
-      console.log(`❌ ${s.userName} disconnected. Code: ${code} | Should reconnect: ${shouldReconnect}`);
+      this.emit('user-disconnected', {
+        sessionId,
+        userId: s.userId,
+        userName: s.userName,
+        clinicName: s.clinicName,
+        shouldReconnect
+      });
+
+      const disconnectReason = this.getDisconnectReason(code);
+      console.log(
+        `❌ ${s.userName} disconnected. Code: ${code} | Type: ${disconnectReason} | Should reconnect: ${shouldReconnect}`
+      );
 
       if (shouldReconnect && s.reconnectAttempts < this.maxReconnectAttempts) {
-        const base = restartRequired ? 3000 : 10000;
-        const delay = Math.min(base * Math.pow(2, s.reconnectAttempts) + Math.random()*2000, 120000);
-        
+        let baseDelay: number;
+
+        if (code === 0) {
+          baseDelay = Math.min(30000 * Math.pow(1.8, s.reconnectAttempts), 600000); // up to 10m
+        } else if (restartRequired) {
+          baseDelay = 8000;
+        } else if (connectionLost || timedOut) {
+          baseDelay = Math.min(15000 * Math.pow(1.5, s.reconnectAttempts), 300000); // up to 5m
+        } else {
+          baseDelay = Math.min(10000 * Math.pow(2, s.reconnectAttempts), 120000); // up to 2m
+        }
+
+        const jitter = Math.random() * 3000;
+        const delay = baseDelay + jitter;
+
         clearTimeout(s.reconnectTimeout);
         s.reconnectTimeout = setTimeout(() => this.reconnectInPlace(userId), delay);
-        
-        console.log(`🔄 Reconnect scheduled for ${s.userName} in ${Math.round(delay/1000)}s (attempt ${s.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
+
+        console.log(
+          `🔄 Reconnect scheduled for ${s.userName} in ${Math.round(
+            delay / 1000
+          )}s (attempt ${s.reconnectAttempts + 1}/${this.maxReconnectAttempts}) | Reason: ${disconnectReason}`
+        );
       } else {
-        console.log(`� No reconnection for ${s.userName} - ${loggedOut ? 'logged out' : 'max attempts reached'}`);
-        await this.cleanupUserSession(sessionId);
+        console.log(
+          `💀 No reconnection for ${s.userName} - ${loggedOut ? 'logged out' : 'max attempts reached'} | Final attempts: ${s.reconnectAttempts}`
+        );
+        await this.cleanupUserSession(userId);
       }
+    }
+  }
+
+  /**
+   * Get human-readable disconnect reason for logging
+   */
+  private getDisconnectReason(code: number): string {
+    switch (code) {
+      case DisconnectReason.badSession:
+        return 'Bad Session';
+      case DisconnectReason.connectionClosed:
+        return 'Connection Closed';
+      case DisconnectReason.connectionLost:
+        return 'Connection Lost';
+      case DisconnectReason.connectionReplaced:
+        return 'Connection Replaced';
+      case DisconnectReason.loggedOut:
+        return 'Logged Out';
+      case DisconnectReason.multideviceMismatch:
+        return 'Multi-device Mismatch';
+      case DisconnectReason.restartRequired:
+        return 'Restart Required';
+      case DisconnectReason.timedOut:
+        return 'Timed Out';
+      case 515:
+        return 'Server Restart';
+      case 0:
+        return 'Unknown/Clean Close';
+      default:
+        return `Code ${code}`;
     }
   }
 
@@ -619,14 +663,13 @@ export class MultiUserWhatsAppService extends EventEmitter {
     const userSession = this.userSessionsByUser.get(userId);
     if (!userSession) return;
 
-    // Log received messages for this user
     await storage.createSystemLog({
       level: 'info',
       message: `Message received for ${userSession.userName}`,
       service: 'whatsapp',
       userId: userSession.userId,
-      metadata: { 
-        messageCount: messageUpdate.messages.length,
+      metadata: {
+        messageCount: messageUpdate.messages?.length ?? 0,
         sessionId: userSession.sessionId
       }
     });
@@ -636,20 +679,18 @@ export class MultiUserWhatsAppService extends EventEmitter {
    * Send message from specific user
    */
   async sendMessageFromUser(
-    userId: string, 
-    phoneNumber: string, 
-    content: string, 
+    userId: string,
+    phoneNumber: string,
+    content: string,
     templateData?: any
   ): Promise<{ success: boolean; messageId?: string; error?: string }> {
     try {
-      // Find active session for this user - keyed by userId
       const userSession = this.userSessionsByUser.get(userId);
-
       if (!userSession || !userSession.socket || !userSession.isConnected) {
         throw new Error(`User ${userId} does not have an active WhatsApp connection`);
       }
 
-      // Process template data
+      // Template replacements
       let processedContent = content;
       if (templateData) {
         Object.entries(templateData).forEach(([key, value]) => {
@@ -657,16 +698,13 @@ export class MultiUserWhatsAppService extends EventEmitter {
         });
       }
 
-      // Send message using user's WhatsApp connection
       const result = await userSession.socket.sendMessage(
         phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@s.whatsapp.net`,
         { text: processedContent }
       );
 
-      // Update user activity
       userSession.lastActivity = new Date();
 
-      // Save message to database
       await storage.createMessage({
         userId,
         sessionId: userSession.sessionId,
@@ -681,17 +719,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       console.log(`📤 Message sent from ${userSession.userName} (${userSession.clinicName}) to ${phoneNumber}`);
 
-      return {
-        success: true,
-        messageId: result?.key?.id || undefined
-      };
-
+      return { success: true, messageId: result?.key?.id || undefined };
     } catch (error: any) {
       console.error(`❌ Failed to send message from user ${userId}:`, error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -706,14 +737,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
     templateData?: any
   ): Promise<{ success: boolean; messageId?: string; error?: string }> {
     try {
-      // Find active session for this user - keyed by userId
       const userSession = this.userSessionsByUser.get(userId);
-
       if (!userSession || !userSession.socket || !userSession.isConnected) {
         throw new Error(`User ${userId} does not have an active WhatsApp connection`);
       }
 
-      // Process template data in caption
       let processedCaption = caption || '';
       if (templateData && caption) {
         Object.entries(templateData).forEach(([key, value]) => {
@@ -721,7 +749,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
         });
       }
 
-      // Send document using user's WhatsApp connection
       const result = await userSession.socket.sendMessage(
         phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@s.whatsapp.net`,
         {
@@ -732,10 +759,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
         }
       );
 
-      // Update user activity
       userSession.lastActivity = new Date();
 
-      // Save message to database
       await storage.createMessage({
         userId,
         sessionId: userSession.sessionId,
@@ -751,17 +776,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       console.log(`📎 Document sent from ${userSession.userName} (${userSession.clinicName}) to ${phoneNumber}`);
 
-      return {
-        success: true,
-        messageId: result?.key?.id || undefined
-      };
-
+      return { success: true, messageId: result?.key?.id || undefined };
     } catch (error: any) {
       console.error(`❌ Failed to send document from user ${userId}:`, error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -783,7 +801,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
       await this.cleanupUserSession(userId);
       console.log(`🔌 Disconnected session for ${userSession.userName} (${userSession.clinicName})`);
       return true;
-
     } catch (error: any) {
       console.error(`❌ Failed to disconnect session ${userId}:`, error);
       return false;
@@ -791,7 +808,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Disconnect all sessions for a user
+   * Disconnect all sessions for a user (single-session model, so same as above)
    */
   async disconnectUser(userId: string): Promise<number> {
     try {
@@ -804,7 +821,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
       }
 
       return 0;
-
     } catch (error: any) {
       console.error(`❌ Failed to disconnect user ${userId}:`, error);
       return 0;
@@ -821,13 +837,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
     console.log(`🧹 Cleaning up session for ${userSession.userName} (${userId})`);
 
     try {
-      // Clear any reconnect timeout
       if (userSession.reconnectTimeout) {
         clearTimeout(userSession.reconnectTimeout);
         userSession.reconnectTimeout = undefined;
       }
 
-      // Close socket if exists
       if (userSession.socket) {
         try {
           userSession.socket.end(undefined);
@@ -837,19 +851,16 @@ export class MultiUserWhatsAppService extends EventEmitter {
         userSession.socket = null;
       }
 
-      // Update database
       await storage.updateUserWhatsAppSession(userSession.userId, {
         isAuthenticated: false,
         isActive: false,
         updatedAt: new Date()
       });
 
-      // Remove from memory - keyed by userId
       this.userSessionsByUser.delete(userId);
 
-      // Auth directory persists - do not delete to maintain auth state
-      console.log(`� Preserving auth directory for ${userSession.userName}: ${userSession.authPath}`);
-
+      // Auth directory persists (do not delete)
+      console.log(`🔒 Preserving auth directory for ${userSession.userName}: ${userSession.authPath}`);
       console.log(`✅ Successfully cleaned up session for ${userSession.userName}`);
     } catch (error) {
       console.error(`❌ Error during session cleanup for ${userSession.userName}:`, error);
@@ -857,25 +868,29 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Cleanup inactive sessions with configurable timeout - excludes pairing/restarting sessions
+   * Cleanup inactive sessions with configurable timeout
    */
   private async cleanupInactiveSessions() {
     const now = new Date();
-    const inactiveThreshold = parseInt(process.env.INACTIVE_SESSION_TIMEOUT || '300000'); // 5 minutes default
+    const inactiveThreshold = parseInt(process.env.INACTIVE_SESSION_TIMEOUT || '300000');
     let cleanedCount = 0;
 
-    // Use Array.from to avoid iterator issues - iterate over userId-keyed sessions
     const sessions = Array.from(this.userSessionsByUser.entries());
-    
+
     for (const [userId, session] of sessions) {
       const timeSinceLastActivity = now.getTime() - session.lastActivity.getTime();
-      
-      // Skip sessions that are pairing or restarting to prevent cleanup during authentication
-      if (!session.isConnected && 
-          session.status !== 'pairing' && 
-          session.status !== 'restarting' && 
-          timeSinceLastActivity > inactiveThreshold) {
-        log(`🧹 Cleaning up inactive session for ${session.userName}: ${userId} (inactive for ${Math.round(timeSinceLastActivity/1000)}s)`);
+
+      if (
+        !session.isConnected &&
+        session.status !== 'pairing' &&
+        session.status !== 'restarting' &&
+        timeSinceLastActivity > inactiveThreshold
+      ) {
+        log(
+          `🧹 Cleaning up inactive session for ${session.userName}: ${userId} (inactive for ${Math.round(
+            timeSinceLastActivity / 1000
+          )}s)`
+        );
         await this.cleanupUserSession(userId);
         cleanedCount++;
       }
@@ -887,7 +902,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Cleanup oldest session for a specific user to make room for new one
+   * Cleanup oldest session for a specific user (single-session model)
    */
   private async cleanupOldestUserSessionForUser(userId: string) {
     const userSession = this.userSessionsByUser.get(userId);
@@ -898,7 +913,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Force cleanup all disconnected sessions (emergency cleanup)
+   * Force cleanup all disconnected sessions (admin)
    */
   private async forceCleanupDisconnectedSessions() {
     const sessions = Array.from(this.userSessionsByUser.entries());
@@ -924,7 +939,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Get all active user sessions
+   * Get all active user sessions (single per user)
    */
   getActiveUserSessions(): Array<{
     sessionId: string;
@@ -935,7 +950,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
     isConnected: boolean;
     lastActivity: Date;
   }> {
-    return Array.from(this.userSessionsByUser.values()).map(session => ({
+    return Array.from(this.userSessionsByUser.values()).map((session) => ({
       sessionId: session.sessionId,
       userId: session.userId,
       userName: session.userName,
@@ -947,7 +962,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Get sessions for specific user
+   * Get sessions for specific user (single)
    */
   getUserSessions(userId: string): Array<{
     sessionId: string;
@@ -957,25 +972,29 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }> {
     const userSession = this.userSessionsByUser.get(userId);
     if (!userSession) return [];
-    
-    return [{
-      sessionId: userSession.sessionId,
-      isConnected: userSession.isConnected,
-      phoneNumber: userSession.phoneNumber,
-      lastActivity: userSession.lastActivity
-    }];
+
+    return [
+      {
+        sessionId: userSession.sessionId,
+        isConnected: userSession.isConnected,
+        phoneNumber: userSession.phoneNumber,
+        lastActivity: userSession.lastActivity
+      }
+    ];
   }
 
   /**
    * Get specific user session status
    */
-  getUserSessionStatus(userId: string): {
-    isConnected: boolean;
-    phoneNumber?: string;
-    lastActivity?: Date;
-    userName?: string;
-    clinicName?: string;
-  } | null {
+  getUserSessionStatus(userId: string):
+    | {
+        isConnected: boolean;
+        phoneNumber?: string;
+        lastActivity?: Date;
+        userName?: string;
+        clinicName?: string;
+      }
+    | null {
     const session = this.userSessionsByUser.get(userId);
     if (!session) return null;
 
@@ -993,15 +1012,12 @@ export class MultiUserWhatsAppService extends EventEmitter {
    */
   async initialize() {
     console.log('🚀 Initializing Multi-User WhatsApp Service...');
-    
+
     try {
-      // Get all active sessions from database
       const activeSessions = await storage.getAllActiveWhatsAppSessions();
-      
       console.log(`📱 Found ${activeSessions.length} previous active sessions`);
-      
-      // Restore sessions for users who were previously connected
-      for (const session of activeSessions.slice(0, 5)) { // Limit to 5 on startup
+
+      for (const session of activeSessions.slice(0, 5)) {
         try {
           console.log(`🔄 Restoring session for user: ${session.userId}`);
           await this.createUserSession(session.userId);
@@ -1011,7 +1027,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
       }
 
       console.log('✅ Multi-User WhatsApp Service initialized');
-      
     } catch (error) {
       console.error('❌ Failed to initialize Multi-User WhatsApp Service:', error);
     }
@@ -1027,25 +1042,29 @@ export class MultiUserWhatsAppService extends EventEmitter {
     userBreakdown: Array<{ userId: string; userName: string; sessionCount: number; connectedCount: number }>;
   } {
     const sessions = Array.from(this.userSessionsByUser.values());
-    const userStats = new Map<string, { userName: string; sessionCount: number; connectedCount: number }>();
+    const userStats = new Map<
+      string,
+      { userName: string; sessionCount: number; connectedCount: number }
+    >();
 
-    sessions.forEach(session => {
-      const existing = userStats.get(session.userId) || {
-        userName: session.userName,
-        sessionCount: 0,
-        connectedCount: 0
-      };
-      
-      existing.sessionCount = 1; // Only 1 session per user now
+    sessions.forEach((session) => {
+      const existing =
+        userStats.get(session.userId) || {
+          userName: session.userName,
+          sessionCount: 0,
+          connectedCount: 0
+        };
+
+      existing.sessionCount = 1; // single-session model
       if (session.isConnected) existing.connectedCount = 1;
-      
+
       userStats.set(session.userId, existing);
     });
 
     return {
       totalSessions: sessions.length,
-      activeSessions: sessions.filter(s => s.isConnected || s.isAuthenticated).length,
-      connectedSessions: sessions.filter(s => s.isConnected).length,
+      activeSessions: sessions.filter((s) => s.isConnected || s.isAuthenticated).length,
+      connectedSessions: sessions.filter((s) => s.isConnected).length,
       userBreakdown: Array.from(userStats.entries()).map(([userId, stats]) => ({
         userId,
         userName: stats.userName,
@@ -1079,7 +1098,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
    */
   async refreshQRCode(userId: string): Promise<{ success: boolean; qrCode?: string; error?: string }> {
     try {
-      // Find existing session for this user
       const userSession = this.userSessionsByUser.get(userId);
 
       if (!userSession || userSession.isAuthenticated) {
@@ -1089,69 +1107,49 @@ export class MultiUserWhatsAppService extends EventEmitter {
         };
       }
 
-      // If there's already a QR code, return it
       if (userSession.qrCode) {
         console.log(`📱 Returning existing QR code for ${userSession.userName}`);
-        return {
-          success: true,
-          qrCode: userSession.qrCode
-        };
+        return { success: true, qrCode: userSession.qrCode };
       }
 
-      // If no QR code available, the session might need to be recreated
-      return {
-        success: false,
-        error: 'No QR code available. Session may need to be recreated.'
-      };
-
+      return { success: false, error: 'No QR code available. Session may need to be recreated.' };
     } catch (error: any) {
       console.error(`❌ Failed to refresh QR for user ${userId}:`, error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
    * Get active session info for a user
    */
-  async getUserSessionInfo(userId: string): Promise<{ 
-    success: boolean; 
-    sessionInfo?: any; 
-    error?: string 
+  async getUserSessionInfo(userId: string): Promise<{
+    success: boolean;
+    sessionInfo?: any;
+    error?: string;
   }> {
     try {
       const userSession = this.userSessionsByUser.get(userId);
 
       if (!userSession) {
-        return {
-          success: false,
-          error: 'No sessions found for this user'
-        };
+        return { success: false, error: 'No sessions found for this user' };
       }
 
-      const sessionInfo = [{
-        sessionId: userSession.sessionId,
-        isConnected: userSession.isConnected,
-        isAuthenticated: userSession.isAuthenticated,
-        phoneNumber: userSession.phoneNumber,
-        lastActivity: userSession.lastActivity,
-        reconnectAttempts: userSession.reconnectAttempts,
-        hasQrCode: !!userSession.qrCode,
-        status: userSession.status
-      }];
+      const sessionInfo = [
+        {
+          sessionId: userSession.sessionId,
+          isConnected: userSession.isConnected,
+          isAuthenticated: userSession.isAuthenticated,
+          phoneNumber: userSession.phoneNumber,
+          lastActivity: userSession.lastActivity,
+          reconnectAttempts: userSession.reconnectAttempts,
+          hasQrCode: !!userSession.qrCode,
+          status: userSession.status
+        }
+      ];
 
-      return {
-        success: true,
-        sessionInfo
-      };
-
+      return { success: true, sessionInfo };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -1163,7 +1161,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
     await this.cleanupInactiveSessions();
     const finalCount = this.userSessionsByUser.size;
     const cleanedCount = initialCount - finalCount;
-    
+
     return {
       cleaned: cleanedCount,
       message: `Cleaned up ${cleanedCount} inactive sessions`
@@ -1175,11 +1173,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
    */
   async getSystemSummary() {
     const sessions = Array.from(this.userSessionsByUser.values());
-    
+
     return {
       totalSessions: sessions.length,
-      activeSessions: sessions.filter(s => s.isConnected).length,
-      connectedSessions: sessions.filter(s => s.isAuthenticated).length,
+      activeSessions: sessions.filter((s) => s.isConnected).length,
+      connectedSessions: sessions.filter((s) => s.isAuthenticated).length,
       userBreakdown: this.getUserSessionBreakdown()
     };
   }
@@ -1189,23 +1187,23 @@ export class MultiUserWhatsAppService extends EventEmitter {
    */
   private getUserSessionBreakdown() {
     const userStats = new Map<string, any>();
-    
+
     for (const session of Array.from(this.userSessionsByUser.values())) {
       if (!userStats.has(session.userId)) {
         userStats.set(session.userId, {
           userId: session.userId,
           userName: session.userName,
-          sessionCount: 1, // Always 1 per user now
+          sessionCount: 1,
           connectedCount: 0
         });
       }
-      
+
       const stats = userStats.get(session.userId)!;
       if (session.isAuthenticated) {
-        stats.connectedCount = 1; // Always 1 or 0 per user now
+        stats.connectedCount = 1;
       }
     }
-    
+
     return Array.from(userStats.values());
   }
 }
