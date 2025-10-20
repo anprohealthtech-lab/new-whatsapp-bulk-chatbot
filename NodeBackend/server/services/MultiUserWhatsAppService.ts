@@ -175,30 +175,61 @@ export class MultiUserWhatsAppService extends EventEmitter {
   ): Promise<WASocket> {
     console.log(`🔌 Creating socket for ${userSession.userName} with persistent auth: ${userSession.authPath}`);
 
+    // Create unique browser identifier to prevent device conflicts
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(7);
+    const uniqueBrowser = [
+      `${userSession.clinicName || 'LIMS'}-${userSession.userName}-${timestamp}-${randomId}`, 
+      'Chrome', 
+      '1.0.0'
+    ];
+
     const socket = makeWASocket({
       version,
       auth: authState,
       printQRInTerminal: false,
-      browser: [`${userSession.clinicName || 'LIMS'}-${userSession.userName}`, 'Chrome', '1.0.0'],
-      generateHighQualityLinkPreview: true,
+      browser: uniqueBrowser, // Use unique browser identifier
+      generateHighQualityLinkPreview: false, // Disable to avoid link-preview-js errors
+      
+      // Suppress PreKey errors and decryption failures (these are normal)
+      logger: process.env.BAILEYS_LOG_LEVEL === 'error' ? {
+        level: 'error',
+        child: () => ({ level: 'error' })
+      } : undefined,
+      
+      // Ignore problematic message types that cause PreKey errors
+      shouldIgnoreJid: (jid: string) => {
+        // Ignore status broadcasts and group messages during initial sync
+        return (jid.includes('status@broadcast')) || 
+               (jid.includes('@g.us') && !userSession.isAuthenticated);
+      },
+      
+      // Handle message failures gracefully
+      getMessage: async (key: any) => {
+        // Return undefined for messages we can't decrypt (normal behavior)
+        return undefined;
+      },
+      
+      // Connection timeouts and retry configuration
       defaultQueryTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
       connectTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
       keepAliveIntervalMs: parseInt(process.env.WHATSAPP_KEEP_ALIVE_INTERVAL || '25000'),
       qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '300000'),
-      retryRequestDelayMs: 1000,
-      maxMsgRetryCount: 2,
+      retryRequestDelayMs: 2000, // Increased from 1000 to reduce conflicts
+      maxMsgRetryCount: 1, // Reduced from 2 to minimize retry conflicts
       markOnlineOnConnect: false,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       shouldIgnoreJid: () => false,
-      getMessage: async () => undefined,
       emitOwnEvents: false,
       fireInitQueries: true,
       transactionOpts: {
-        maxCommitRetries: 2,
-        delayBetweenTriesMs: 1000
+        maxCommitRetries: 1, // Reduced from 2 to prevent conflicts
+        delayBetweenTriesMs: 2000 // Increased from 1000 to reduce race conditions
       }
     });
+
+    console.log(`🔌 Created socket with unique browser ID: ${uniqueBrowser[0]}`);
 
     // Connection updates
     socket.ev.on('connection.update', async (update: any) => {
@@ -215,9 +246,29 @@ export class MultiUserWhatsAppService extends EventEmitter {
       }
     });
 
-    // Incoming messages
+    // Incoming messages (with error suppression for PreKey issues)
     socket.ev.on('messages.upsert', async (m) => {
-      await this.handleUserMessages(userSession.userId, m);
+      try {
+        await this.handleUserMessages(userSession.userId, m);
+      } catch (error: any) {
+        // Suppress PreKey and decryption errors (these are normal for new sessions)
+        if (error.message?.includes('PreKey') || 
+            error.message?.includes('decrypt') ||
+            error.message?.includes('No session found')) {
+          // These are expected during initial sync, don't log them
+          return;
+        }
+        console.error(`❌ Message handling error for ${userSession.userName}:`, error);
+      }
+    });
+
+    // Suppress common Baileys errors that are expected behavior
+    socket.ev.on('CB:call', () => {
+      // Suppress call notifications
+    });
+
+    socket.ev.on('CB:chatstate', () => {
+      // Suppress typing indicators
     });
 
     return socket;
@@ -574,9 +625,13 @@ export class MultiUserWhatsAppService extends EventEmitter {
       const connectionLost = code === DisconnectReason.connectionLost;
       const timedOut = code === DisconnectReason.timedOut;
       const serverTerminated = code === 428;
+      const connectionReplaced = code === DisconnectReason.connectionReplaced || code === 440;
+      const badSession = code === DisconnectReason.badSession || code === 500;
 
-      const shouldReconnect =
-        !loggedOut && (restartRequired || connectionLost || timedOut || serverTerminated || code === 0);
+      // For connection replaced or bad session, clear auth state and require fresh QR
+      const shouldClearAuth = connectionReplaced || badSession;
+      const shouldReconnect = !loggedOut && !connectionReplaced && !badSession && 
+        (restartRequired || connectionLost || timedOut || serverTerminated || code === 0);
 
       if (code === 0 && s.reconnectAttempts >= 2) {
         console.log(
@@ -586,12 +641,41 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       // Store disconnect code for future reference
       await storage.updateUserWhatsAppSession(s.userId, {
-        isAuthenticated: !loggedOut,
+        isAuthenticated: !loggedOut && !shouldClearAuth,
         isActive: shouldReconnect,
+        lastDisconnectCode: code,
         updatedAt: new Date()
       });
 
-      // If logged out (401), clear corrupted auth state
+      // Clear auth state for connection conflicts and corrupted sessions
+      if (shouldClearAuth) {
+        console.log(`🗑️ Code ${code} detected: Clearing auth state for ${s.userName} (${this.getDisconnectReason(code)})`);
+        const authPath = path.join(this.authBaseDir, s.userId);
+        if (fs.existsSync(authPath)) {
+          try {
+            fs.rmSync(authPath, { recursive: true, force: true });
+            console.log(`🗑️ Removed auth directory due to Code ${code}: ${authPath}`);
+            
+            await storage.createSystemLog({
+              level: 'warning',
+              message: `Cleared auth state due to Code ${code} (${this.getDisconnectReason(code)})`,
+              service: 'whatsapp',
+              userId: s.userId,
+              metadata: { 
+                authPath, 
+                sessionId: s.sessionId,
+                phoneNumber: s.phoneNumber,
+                reason: this.getDisconnectReason(code),
+                requiresFreshQR: true
+              }
+            });
+          } catch (error) {
+            console.error(`❌ Failed to clear auth directory:`, error);
+          }
+        }
+      }
+
+      // If logged out (401), also clear corrupted auth state
       if (loggedOut) {
         console.log(`🗑️ Code 401 detected: Clearing corrupted auth state for ${s.userName}`);
         const authPath = path.join(this.authBaseDir, s.userId);
@@ -688,6 +772,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
         return 'Timed Out';
       case 428:
         return 'Connection Terminated by Server';
+      case 440:
+        return 'Connection Replaced';
+      case 500:
+        return 'Bad Session';
       case 515:
         return 'Server Restart';
       case 0:
@@ -894,24 +982,6 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       await storage.createMessage({
         userId,
-        sessionId: userSession.sessionId,
-        to: phoneNumber,
-        content: processedCaption,
-        type: 'document',
-        status: 'sent',
-        messageId: result?.key?.id || undefined,
-        filePath,
-        templateData,
-        createdAt: new Date()
-      });
-
-      console.log(`📎 Document sent from ${userSession.userName} (${userSession.clinicName}) to ${phoneNumber}`);
-
-      return { success: true, messageId: result?.key?.id || undefined };
-    } catch (error: any) {
-      console.error(`❌ Failed to send document from user ${userId}:`, error);
-      return { success: false, error: error.message };
-    }
   }
 
   /**
