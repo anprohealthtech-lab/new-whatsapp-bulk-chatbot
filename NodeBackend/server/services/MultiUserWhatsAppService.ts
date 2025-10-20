@@ -318,8 +318,14 @@ export class MultiUserWhatsAppService extends EventEmitter {
         const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
         console.log(`🔍 Found ${dbSessions?.length || 0} DB sessions for user ${userId}`);
 
+        // Exclude 401-failed sessions and validate auth state
         const reusable = dbSessions
-          ?.filter((s: any) => s.isAuthenticated && s.isActive && s.sessionData)
+          ?.filter((s: any) => 
+            s.isAuthenticated && 
+            s.isActive && 
+            s.sessionData &&
+            (!s.lastDisconnectCode || s.lastDisconnectCode !== 401) // Exclude 401 failures
+          )
           ?.sort(
             (a: any, b: any) =>
               new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
@@ -412,7 +418,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
         const sessionId = this.generateSessionId();
         const authPath = path.join(this.authBaseDir, userId);
+        
+        // Ensure auth directory exists and validate existing auth state
         fs.mkdirSync(authPath, { recursive: true });
+        await this.validateAuthState(userId, authPath);
 
         const strategy = this.SESSION_STRATEGIES[strategyName];
 
@@ -574,11 +583,38 @@ export class MultiUserWhatsAppService extends EventEmitter {
         );
       }
 
+      // Store disconnect code for future reference
       await storage.updateUserWhatsAppSession(s.userId, {
         isAuthenticated: !loggedOut,
         isActive: shouldReconnect,
         updatedAt: new Date()
       });
+
+      // If logged out (401), clear corrupted auth state
+      if (loggedOut) {
+        console.log(`🗑️ Code 401 detected: Clearing corrupted auth state for ${s.userName}`);
+        const authPath = path.join(this.authBaseDir, s.userId);
+        if (fs.existsSync(authPath)) {
+          try {
+            fs.rmSync(authPath, { recursive: true, force: true });
+            console.log(`🗑️ Removed corrupted auth directory: ${authPath}`);
+            
+            await storage.createSystemLog({
+              level: 'warning',
+              message: `Cleared corrupted auth state due to Code 401`,
+              service: 'whatsapp',
+              userId: s.userId,
+              metadata: { 
+                authPath, 
+                sessionId: s.sessionId,
+                phoneNumber: s.phoneNumber 
+              }
+            });
+          } catch (error) {
+            console.error(`❌ Failed to clear auth directory:`, error);
+          }
+        }
+      }
 
       this.emit('user-disconnected', {
         sessionId,
@@ -653,6 +689,96 @@ export class MultiUserWhatsAppService extends EventEmitter {
         return 'Unknown/Clean Close';
       default:
         return `Code ${code}`;
+    }
+  }
+
+  /**
+   * Clear corrupted auth state for a user
+   */
+  async clearCorruptedAuth(userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const userSession = this.userSessionsByUser.get(userId);
+      const authPath = path.join(this.authBaseDir, userId);
+      
+      console.log(`🗑️ Clearing corrupted auth state for user ${userId}`);
+      
+      // Clean up in-memory session first
+      if (userSession) {
+        await this.cleanupUserSession(userId);
+      }
+      
+      // Remove corrupted auth directory
+      if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+        console.log(`🗑️ Removed corrupted auth directory: ${authPath}`);
+      }
+      
+      // Mark all DB sessions as inactive and unauthenticated
+      try {
+        const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
+        if (dbSessions && dbSessions.length > 0) {
+          for (const session of dbSessions) {
+            await storage.updateUserWhatsAppSession(userId, {
+              isAuthenticated: false,
+              isActive: false,
+              updatedAt: new Date()
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`⚠️ Failed to update DB sessions for ${userId}:`, error);
+      }
+      
+      await storage.createSystemLog({
+        level: 'info',
+        message: `Cleared corrupted auth state for user ${userId}`,
+        service: 'whatsapp',
+        userId,
+        metadata: { authPath, reason: 'Code 401 - Logged Out' }
+      });
+      
+      console.log(`✅ Successfully cleared auth state for user ${userId}`);
+      return { 
+        success: true, 
+        message: `Auth state cleared. User can now connect with fresh QR code.` 
+      };
+    } catch (error) {
+      console.error(`❌ Failed to clear auth for user ${userId}:`, error);
+      return { 
+        success: false, 
+        message: `Failed to clear auth state: ${(error as Error).message}` 
+      };
+    }
+  }
+
+  /**
+   * Validate and clean corrupted auth directories
+   */
+  private async validateAuthState(userId: string, authPath: string): Promise<boolean> {
+    try {
+      if (!fs.existsSync(authPath)) {
+        return true; // No auth state is fine, will generate QR
+      }
+      
+      // Try to load auth state
+      const { state } = await useMultiFileAuthState(authPath);
+      
+      // Check if auth credentials are valid
+      if (!state.creds || !state.creds.noiseKey || !state.creds.signedIdentityKey) {
+        console.log(`🗑️ Invalid auth credentials detected for ${userId}`);
+        fs.rmSync(authPath, { recursive: true, force: true });
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      console.log(`🗑️ Corrupted auth state detected for ${userId}, removing...`);
+      try {
+        fs.rmSync(authPath, { recursive: true, force: true });
+      } catch (e) {
+        console.error(`❌ Failed to remove corrupted auth:`, e);
+      }
+      return false;
     }
   }
 
