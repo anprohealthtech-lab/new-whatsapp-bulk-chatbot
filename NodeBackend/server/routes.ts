@@ -605,6 +605,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Manually reconnect specific user to WhatsApp (for Code: 428 and other recoverable disconnects)
+  app.post('/api/users/:userId/whatsapp/reconnect', async (req, res) => {
+    try {
+      const { userId } = req.params;
+      
+      const status = multiUserWhatsAppService.getUserSessionStatus(userId);
+      if (!status) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'User session not found' 
+        });
+      }
+
+      if (status.isConnected) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'User is already connected to WhatsApp' 
+        });
+      }
+
+      if (!status.needsReconnection || !status.canReconnect) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `User cannot reconnect. Needs reconnection: ${status.needsReconnection}, Can reconnect: ${status.canReconnect}` 
+        });
+      }
+
+      // Trigger manual reconnection
+      await multiUserWhatsAppService.reconnectInPlace(userId);
+      
+      res.json({ 
+        success: true, 
+        message: 'Manual reconnection initiated successfully',
+        data: {
+          userId,
+          userName: status.userName,
+          clinicName: status.clinicName,
+          reconnectAttempts: status.reconnectAttempts
+        }
+      });
+    } catch (error: any) {
+      log(`User reconnect error: ${error.message}`);
+      res.status(400).json({ 
+        success: false, 
+        error: error.message || 'Failed to reconnect user to WhatsApp' 
+      });
+    }
+  });
+
   // Get all active WhatsApp sessions
   app.get('/api/admin/whatsapp/sessions', async (req, res) => {
     try {

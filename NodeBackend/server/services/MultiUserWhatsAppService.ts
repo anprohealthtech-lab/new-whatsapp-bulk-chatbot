@@ -108,7 +108,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   /**
    * In-place reconnect that reuses same sessionId and authPath
    */
-  private async reconnectInPlace(userId: string) {
+  async reconnectInPlace(userId: string) {
     const s = this.userSessionsByUser.get(userId);
     if (!s) {
       console.log(`⚠️ No session found for reconnection: ${userId}`);
@@ -573,9 +573,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
       const restartRequired = code === DisconnectReason.restartRequired || code === 515;
       const connectionLost = code === DisconnectReason.connectionLost;
       const timedOut = code === DisconnectReason.timedOut;
+      const serverTerminated = code === 428;
 
       const shouldReconnect =
-        !loggedOut && (restartRequired || connectionLost || timedOut || code === 0);
+        !loggedOut && (restartRequired || connectionLost || timedOut || serverTerminated || code === 0);
 
       if (code === 0 && s.reconnectAttempts >= 2) {
         console.log(
@@ -638,6 +639,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
           baseDelay = 8000;
         } else if (connectionLost || timedOut) {
           baseDelay = Math.min(15000 * Math.pow(1.5, s.reconnectAttempts), 300000); // up to 5m
+        } else if (serverTerminated) {
+          baseDelay = Math.min(20000 * Math.pow(1.6, s.reconnectAttempts), 360000); // up to 6m
         } else {
           baseDelay = Math.min(10000 * Math.pow(2, s.reconnectAttempts), 120000); // up to 2m
         }
@@ -683,6 +686,8 @@ export class MultiUserWhatsAppService extends EventEmitter {
         return 'Restart Required';
       case DisconnectReason.timedOut:
         return 'Timed Out';
+      case 428:
+        return 'Connection Terminated by Server';
       case 515:
         return 'Server Restart';
       case 0:
@@ -1119,17 +1124,30 @@ export class MultiUserWhatsAppService extends EventEmitter {
         lastActivity?: Date;
         userName?: string;
         clinicName?: string;
+        status: string;
+        reconnectAttempts: number;
+        needsReconnection: boolean;
+        canReconnect: boolean;
+        isAuthenticated: boolean;
       }
     | null {
     const session = this.userSessionsByUser.get(userId);
     if (!session) return null;
+
+    const needsReconnection = !session.isConnected && session.isAuthenticated;
+    const canReconnect = session.reconnectAttempts < this.maxReconnectAttempts;
 
     return {
       isConnected: session.isConnected,
       phoneNumber: session.phoneNumber,
       lastActivity: session.lastActivity,
       userName: session.userName,
-      clinicName: session.clinicName
+      clinicName: session.clinicName,
+      status: session.status,
+      reconnectAttempts: session.reconnectAttempts,
+      needsReconnection,
+      canReconnect,
+      isAuthenticated: session.isAuthenticated
     };
   }
 
