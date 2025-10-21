@@ -315,10 +315,22 @@ export class MultiUserWhatsAppService extends EventEmitter {
       browser: uniqueBrowser, // Use unique browser identifier
       generateHighQualityLinkPreview: false, // Disable to avoid link-preview-js errors
       
-      // Suppress PreKey errors and decryption failures (these are normal)
+      // Complete logger implementation to prevent "logger.error is not a function" errors
       logger: process.env.BAILEYS_LOG_LEVEL === 'error' ? {
         level: 'error',
-        child: () => ({ level: 'error' })
+        trace: () => {},
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        child: () => ({
+          level: 'error',
+          trace: () => {},
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {}
+        })
       } : undefined,
       
       // Ignore problematic message types that cause PreKey errors
