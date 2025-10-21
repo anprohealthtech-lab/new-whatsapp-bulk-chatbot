@@ -296,4 +296,94 @@ export class DatabaseStorage implements IStorage {
       throw new Error(`Failed to deactivate other user sessions: ${error.message}`);
     }
   }
+
+  async getAllWhatsAppSessions(): Promise<any[]> {
+    try {
+      const sessions = await db.select()
+        .from(whatsappSessions)
+        .orderBy(desc(whatsappSessions.updatedAt));
+
+      return sessions;
+    } catch (error: any) {
+      console.error('Error getting all WhatsApp sessions:', error);
+      throw new Error(`Failed to get all WhatsApp sessions: ${error.message}`);
+    }
+  }
+
+  async deleteWhatsAppSession(sessionId: string): Promise<void> {
+    try {
+      await db.delete(whatsappSessions)
+        .where(eq(whatsappSessions.id, sessionId));
+
+      console.log(`🗑️ Deleted WhatsApp session: ${sessionId}`);
+    } catch (error: any) {
+      console.error('Error deleting WhatsApp session:', error);
+      throw new Error(`Failed to delete WhatsApp session: ${error.message}`);
+    }
+  }
+
+  async deleteWhatsAppSessionsByUserId(userId: string, exceptSessionId?: string): Promise<number> {
+    try {
+      let whereCondition = eq(whatsappSessions.userId, userId);
+      
+      if (exceptSessionId) {
+        whereCondition = and(
+          eq(whatsappSessions.userId, userId),
+          sql`${whatsappSessions.id} != ${exceptSessionId}`
+        ) as any;
+      }
+
+      const deleted = await db.delete(whatsappSessions)
+        .where(whereCondition)
+        .returning();
+
+      console.log(`🗑️ Deleted ${deleted.length} WhatsApp sessions for user ${userId}${exceptSessionId ? ` (except ${exceptSessionId})` : ''}`);
+      return deleted.length;
+    } catch (error: any) {
+      console.error('Error deleting user WhatsApp sessions:', error);
+      throw new Error(`Failed to delete user WhatsApp sessions: ${error.message}`);
+    }
+  }
+
+  async cleanupFailedSessions(): Promise<number> {
+    try {
+      // Delete sessions that are not authenticated or not active
+      const deleted = await db.delete(whatsappSessions)
+        .where(sql`
+          ${whatsappSessions.isAuthenticated} = false 
+          OR ${whatsappSessions.isActive} = false
+        `)
+        .returning();
+
+      console.log(`🧹 Cleaned up ${deleted.length} failed WhatsApp sessions`);
+      return deleted.length;
+    } catch (error: any) {
+      console.error('Error cleaning up failed sessions:', error);
+      throw new Error(`Failed to cleanup failed sessions: ${error.message}`);
+    }
+  }
+
+  async cleanupOrphanedSessions(maxAgeDays: number = 7): Promise<number> {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+
+      // Delete sessions older than the cutoff that are not authenticated or active
+      const deleted = await db.delete(whatsappSessions)
+        .where(sql`
+          ${whatsappSessions.updatedAt} < ${cutoffDate}
+          AND (
+            ${whatsappSessions.isAuthenticated} = false 
+            OR ${whatsappSessions.isActive} = false
+          )
+        `)
+        .returning();
+
+      console.log(`🧹 Cleaned up ${deleted.length} orphaned WhatsApp sessions older than ${maxAgeDays} days`);
+      return deleted.length;
+    } catch (error: any) {
+      console.error('Error cleaning up orphaned sessions:', error);
+      throw new Error(`Failed to cleanup orphaned sessions: ${error.message}`);
+    }
+  }
 }

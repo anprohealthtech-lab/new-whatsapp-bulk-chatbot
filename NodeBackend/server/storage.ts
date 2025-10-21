@@ -28,10 +28,15 @@ export interface IStorage {
   // Multi-User WhatsApp Session methods
   getUserActiveSessions(userId: string): Promise<any[]>;
   getAllActiveWhatsAppSessions(): Promise<any[]>;
+  getAllWhatsAppSessions(): Promise<any[]>;
   updateUserWhatsAppSession(userId: string, updates: any): Promise<void>;
   createWhatsAppSession(session: any): Promise<any>;
   getWhatsAppSessionsByUserId(userId: string): Promise<any[]>;
   deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void>;
+  deleteWhatsAppSession(sessionId: string): Promise<void>;
+  deleteWhatsAppSessionsByUserId(userId: string, exceptSessionId?: string): Promise<number>;
+  cleanupFailedSessions(): Promise<number>;
+  cleanupOrphanedSessions(maxAgeDays?: number): Promise<number>;
 }
 
 export class MemStorage implements IStorage {
@@ -66,6 +71,10 @@ export class MemStorage implements IStorage {
     return [];
   }
 
+  async getAllWhatsAppSessions(): Promise<any[]> {
+    return [];
+  }
+
   async updateUserWhatsAppSession(userId: string, updates: any): Promise<void> {
     // Stub implementation
   }
@@ -80,6 +89,22 @@ export class MemStorage implements IStorage {
 
   async deactivateOtherUserSessions(userId: string, currentSessionId: string): Promise<void> {
     // Stub implementation for memory storage
+  }
+
+  async deleteWhatsAppSession(sessionId: string): Promise<void> {
+    // Stub implementation for memory storage
+  }
+
+  async deleteWhatsAppSessionsByUserId(userId: string, exceptSessionId?: string): Promise<number> {
+    return 0;
+  }
+
+  async cleanupFailedSessions(): Promise<number> {
+    return 0;
+  }
+
+  async cleanupOrphanedSessions(maxAgeDays?: number): Promise<number> {
+    return 0;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {

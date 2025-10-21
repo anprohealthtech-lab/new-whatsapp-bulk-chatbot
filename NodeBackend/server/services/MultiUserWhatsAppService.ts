@@ -85,16 +85,140 @@ export class MultiUserWhatsAppService extends EventEmitter {
     const cleanupInterval = parseInt(process.env.SESSION_CLEANUP_INTERVAL || '300000'); // 5 min
     setInterval(() => this.cleanupInactiveSessions(), cleanupInterval);
 
+    // Schedule daily database cleanup at 9 PM IST (3:30 PM UTC)
+    this.scheduleDailyDatabaseCleanup();
+
     log(`🚀 Multi-User WhatsApp Service initialized with limits:`);
     log(`   - Max Global Sessions: ${this.maxGlobalSessions}`);
     log(`   - Max Sessions Per User: ${process.env.WHATSAPP_MAX_SESSIONS_PER_USER || 3}`);
     log(`   - Cleanup Interval: ${cleanupInterval / 1000}s`);
     log(`   - Inactive Timeout: ${process.env.INACTIVE_SESSION_TIMEOUT || 300000}ms`);
+    log(`   - Daily DB Cleanup: 9:00 PM IST (3:30 PM UTC)`);
   }
 
   private ensureAuthDirectory() {
     if (!fs.existsSync(this.authBaseDir)) {
       fs.mkdirSync(this.authBaseDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Schedule daily database cleanup at 9 PM IST (3:30 PM UTC)
+   */
+  private scheduleDailyDatabaseCleanup() {
+    const scheduleNext = () => {
+      const now = new Date();
+      const target = new Date();
+      
+      // Set target to 9 PM IST (3:30 PM UTC)
+      target.setUTCHours(15, 30, 0, 0); // 3:30 PM UTC = 9:00 PM IST
+      
+      // If we've passed today's cleanup time, schedule for tomorrow
+      if (now > target) {
+        target.setUTCDate(target.getUTCDate() + 1);
+      }
+      
+      const timeUntilCleanup = target.getTime() - now.getTime();
+      console.log(`📅 Next database cleanup scheduled for: ${target.toISOString()} (in ${Math.round(timeUntilCleanup / (1000 * 60 * 60))} hours)`);
+      
+      setTimeout(async () => {
+        await this.performDatabaseCleanup();
+        scheduleNext(); // Schedule the next cleanup
+      }, timeUntilCleanup);
+    };
+    
+    scheduleNext();
+  }
+
+  /**
+   * Perform comprehensive database cleanup
+   */
+  private async performDatabaseCleanup() {
+    try {
+      console.log('🧹 Starting scheduled database cleanup...');
+      
+      const startTime = Date.now();
+      
+      // Step 1: Clean failed sessions
+      const failedCount = await storage.cleanupFailedSessions();
+      console.log(`🗑️ Cleaned ${failedCount} failed sessions`);
+      
+      // Step 2: Clean orphaned sessions (older than 7 days)
+      const orphanedCount = await storage.cleanupOrphanedSessions(7);
+      console.log(`🗑️ Cleaned ${orphanedCount} orphaned sessions`);
+      
+      // Step 3: Clean orphaned auth directories
+      const authCleanupCount = await this.cleanupOrphanedAuthDirectories();
+      console.log(`🗑️ Cleaned ${authCleanupCount} orphaned auth directories`);
+      
+      const duration = Date.now() - startTime;
+      const totalCleaned = failedCount + orphanedCount + authCleanupCount;
+      
+      console.log(`✅ Database cleanup completed in ${duration}ms - Total items cleaned: ${totalCleaned}`);
+      
+      // Log the cleanup event
+      await storage.createSystemLog({
+        level: 'info',
+        message: `Scheduled database cleanup completed`,
+        service: 'whatsapp',
+        metadata: JSON.stringify({
+          duration,
+          failedSessions: failedCount,
+          orphanedSessions: orphanedCount,
+          orphanedAuthDirs: authCleanupCount,
+          totalCleaned
+        })
+      });
+      
+    } catch (error) {
+      console.error('❌ Database cleanup failed:', error);
+      await storage.createSystemLog({
+        level: 'error',
+        message: 'Scheduled database cleanup failed',
+        service: 'whatsapp',
+        metadata: JSON.stringify({ error: (error as Error).message })
+      });
+    }
+  }
+
+  /**
+   * Clean up orphaned auth directories that don't have corresponding database sessions
+   */
+  private async cleanupOrphanedAuthDirectories(): Promise<number> {
+    try {
+      let cleanedCount = 0;
+      
+      if (!fs.existsSync(this.authBaseDir)) {
+        return 0;
+      }
+      
+      const authDirs = fs.readdirSync(this.authBaseDir);
+      const allSessions = await storage.getAllWhatsAppSessions();
+      const activeUserIds = new Set(allSessions.filter(s => s.isActive || s.isAuthenticated).map(s => s.userId));
+      
+      for (const dirName of authDirs) {
+        const dirPath = path.join(this.authBaseDir, dirName);
+        
+        if (!fs.statSync(dirPath).isDirectory()) continue;
+        
+        // If this user ID doesn't have any active sessions, remove the auth directory
+        if (!activeUserIds.has(dirName)) {
+          const dirAge = Date.now() - fs.statSync(dirPath).mtime.getTime();
+          const oneDayMs = 24 * 60 * 60 * 1000;
+          
+          // Only remove directories older than 1 day to avoid removing actively used ones
+          if (dirAge > oneDayMs) {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            console.log(`🗑️ Removed orphaned auth directory: ${dirName}`);
+            cleanedCount++;
+          }
+        }
+      }
+      
+      return cleanedCount;
+    } catch (error) {
+      console.error('Error cleaning orphaned auth directories:', error);
+      return 0;
     }
   }
 
@@ -364,10 +488,26 @@ export class MultiUserWhatsAppService extends EventEmitter {
           }
         }
 
-        // DB
+        // DB - with selective cleanup of failed sessions BEFORE checking
         console.log(`🔍 Checking database for user ${userId}...`);
-        const dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
-        console.log(`🔍 Found ${dbSessions?.length || 0} DB sessions for user ${userId}`);
+        
+        // STEP 1: Get all sessions for this user first
+        let dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
+        console.log(`🔍 Found ${dbSessions?.length || 0} total DB sessions for user ${userId}`);
+        
+        // STEP 2: Identify and delete failed sessions (not authenticated OR not active)
+        const failedSessions = dbSessions?.filter((s: any) => !s.isAuthenticated || !s.isActive) || [];
+        if (failedSessions.length > 0) {
+          console.log(`🧹 SELECTIVE CLEANUP: Found ${failedSessions.length} failed sessions to delete`);
+          for (const failedSession of failedSessions) {
+            await storage.deleteWhatsAppSession(failedSession.id);
+            console.log(`🗑️ Deleted failed session: ${failedSession.id} (Auth: ${failedSession.isAuthenticated}, Active: ${failedSession.isActive})`);
+          }
+          
+          // STEP 3: Refresh the session list after cleanup
+          dbSessions = await storage.getWhatsAppSessionsByUserId(userId);
+          console.log(`🔍 After cleanup: ${dbSessions?.length || 0} remaining DB sessions for user ${userId}`);
+        }
 
         // Exclude 401-failed sessions and validate auth state
         const reusable = dbSessions
@@ -646,6 +786,30 @@ export class MultiUserWhatsAppService extends EventEmitter {
         lastDisconnectCode: code,
         updatedAt: new Date()
       });
+
+      // IMMEDIATE DATABASE CLEANUP: Delete failed sessions for specific error codes
+      if (loggedOut || connectionReplaced || badSession || code === 401 || code === 440 || code === 500) {
+        console.log(`🗑️ IMMEDIATE CLEANUP: Deleting session ${sessionId} due to error code ${code} (${this.getDisconnectReason(code)})`);
+        try {
+          await storage.deleteWhatsAppSession(sessionId);
+          console.log(`✅ Successfully deleted failed session: ${sessionId}`);
+          
+          await storage.createSystemLog({
+            level: 'info',
+            message: `Immediately deleted failed WhatsApp session`,
+            service: 'whatsapp',
+            userId: s.userId,
+            metadata: JSON.stringify({ 
+              sessionId, 
+              disconnectCode: code, 
+              reason: this.getDisconnectReason(code),
+              userName: s.userName
+            })
+          });
+        } catch (deleteError) {
+          console.error(`❌ Failed to delete session ${sessionId}:`, deleteError);
+        }
+      }
 
       // Clear auth state for connection conflicts and corrupted sessions
       if (shouldClearAuth) {
@@ -982,6 +1146,34 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       await storage.createMessage({
         userId,
+        sessionId: userSession.sessionId,
+        to: phoneNumber,
+        content: processedCaption,
+        type: 'report',
+        status: 'sent'
+      });
+
+      return {
+        success: true,
+        messageId: result?.key?.id || undefined
+      };
+
+    } catch (error: any) {
+      console.error(`❌ Failed to send report for user ${userId}:`, error);
+      
+      await storage.createSystemLog({
+        level: 'error',
+        message: `Failed to send WhatsApp report for user ${userId}`,
+        service: 'whatsapp',
+        userId,
+        metadata: { error: error.message, phoneNumber, filePath }
+      });
+
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
