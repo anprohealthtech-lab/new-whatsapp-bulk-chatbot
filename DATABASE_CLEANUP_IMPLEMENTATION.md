@@ -181,12 +181,45 @@ async getAllWhatsAppSessions(): Promise<any[]>
 4. **Scalability**: Maintains performance as user base grows
 5. **Monitoring**: Comprehensive logging for tracking cleanup effectiveness
 
+## Foreign Key Constraint Fix
+
+### Issue Resolution
+**Problem**: Foreign key constraint `messages_session_id_whatsapp_sessions_id_fk` was preventing session deletion when related messages existed, causing cleanup failures.
+
+**Solution**: Removed foreign key constraint from `messages.session_id` while preserving messages for quota tracking and analytics.
+
+**SQL Commands Applied**:
+```sql
+-- Remove problematic foreign key constraint
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_session_id_whatsapp_sessions_id_fk;
+
+-- Add performance index
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+
+-- Maintain data integrity at user level
+ALTER TABLE messages ADD CONSTRAINT messages_user_id_users_id_fk 
+FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+
+-- Document the change
+COMMENT ON COLUMN messages.session_id IS 'References whatsapp_sessions.id but without foreign key constraint to allow session cleanup while preserving message history for quota tracking';
+```
+
+### Benefits of This Approach
+- ✅ **Sessions can be deleted freely** without foreign key violations
+- ✅ **Messages are preserved** for quota tracking and analytics
+- ✅ **Data integrity maintained** at user level through `user_id` FK
+- ✅ **Performance optimized** with index on `session_id` for queries
+- ✅ **No data loss** - all historical message data retained
+
 ## Implementation Status
 ✅ **Completed**: All three tiers of cleanup strategy implemented
 - Selective cleanup during session creation
-- Scheduled daily maintenance cleanup
+- Scheduled daily maintenance cleanup  
 - Immediate cleanup on connection failures
 - Enhanced database storage methods
 - Comprehensive logging and monitoring
+- **Foreign key constraint issue resolved**
 
-The implementation provides a robust solution to the database session accumulation problem while maintaining backward compatibility and ensuring reliable WhatsApp connection management.
+✅ **Production Ready**: Database cleanup now works without constraint violations while preserving message history for business analytics.
+
+The implementation provides a robust solution to the database session accumulation problem while maintaining backward compatibility, ensuring reliable WhatsApp connection management, and preserving valuable message data for quota tracking.
