@@ -651,6 +651,385 @@ router.post('/send-message', async (req, res) => {
 });
 
 // ========================================
+// User-Specific WhatsApp File Upload Endpoints
+// ========================================
+
+// Helper function for template processing
+function processMessageTemplate(template: string, data: any): string {
+  let processed = template;
+  
+  Object.entries(data).forEach(([key, value]) => {
+    if (value) {
+      const placeholder = `[${key.charAt(0).toUpperCase() + key.slice(1)}]`;
+      processed = processed.replace(new RegExp(placeholder, 'g'), value as string);
+    }
+  });
+  
+  return processed;
+}
+
+// Document/File Upload Endpoint - FIXES 404 ERROR
+router.post('/users/:userId/whatsapp/send-document', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { to, caption, patientName, testName, doctorName } = req.body;
+    const file = req.file;
+
+    // Validate required fields
+    if (!file || !to) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: file and to number are required'
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(to)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number format. Use E.164 format: +countrycode+number'
+      });
+    }
+
+    // Save uploaded file
+    const savedFile = await fileService.saveFile(file);
+    
+    // Process message template if caption provided
+    let processedCaption = caption || '';
+    if (caption && (patientName || testName || doctorName)) {
+      processedCaption = processMessageTemplate(caption, {
+        patientName,
+        testName,
+        doctorName,
+        reportDate: new Date().toLocaleDateString()
+      });
+    }
+
+    // Send document via WhatsApp
+    const result = await multiWhatsAppService.sendMediaMessage(
+      userId,
+      to,
+      savedFile.filePath,
+      processedCaption
+    );
+
+    if (result.success) {
+      // Log successful send
+      await storage.createSystemLog({
+        level: 'info',
+        message: `Document sent successfully to ${to}`,
+        metadata: { userId, fileName: savedFile.fileName, fileSize: savedFile.size }
+      });
+      
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        message: 'Document sent successfully',
+        fileName: savedFile.fileName
+      });
+    } else {
+      // Log failure
+      await storage.createSystemLog({
+        level: 'error',
+        message: `Failed to send document to ${to}: ${result.error}`,
+        metadata: { userId, fileName: savedFile.fileName }
+      });
+      
+      res.status(400).json({
+        success: false,
+        message: result.error || 'Failed to send document'
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Send document error:', error);
+    await storage.createSystemLog({
+      level: 'error',
+      message: `Document send error: ${error.message}`,
+      metadata: { userId: req.params.userId, error: error.message }
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send document',
+      error: error.message
+    });
+  }
+});
+
+// File URL Endpoint - FIXES 404 ERROR (for sending files from URLs)
+router.post('/users/:userId/whatsapp/send-file-url', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { to, fileUrl, caption, fileName, patientName, testName, doctorName } = req.body;
+
+    // Validate required fields
+    if (!fileUrl || !to) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: fileUrl and to number are required'
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(to)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number format. Use E.164 format: +countrycode+number'
+      });
+    }
+
+    // Download and save file from URL
+    const savedFile = await fileService.downloadAndSaveFile(fileUrl, userId, fileName);
+    
+    // Process message template if caption provided
+    let processedCaption = caption || '';
+    if (caption && (patientName || testName || doctorName)) {
+      processedCaption = processMessageTemplate(caption, {
+        patientName,
+        testName,
+        doctorName,
+        reportDate: new Date().toLocaleDateString()
+      });
+    }
+
+    // Send document via WhatsApp
+    const result = await multiWhatsAppService.sendMediaMessage(
+      userId,
+      to,
+      savedFile.path,
+      processedCaption
+    );
+
+    if (result.success) {
+      // Log successful send
+      await storage.createSystemLog({
+        level: 'info',
+        message: `File from URL sent successfully to ${to}`,
+        metadata: { userId, sourceUrl: fileUrl, fileName: savedFile.name, fileSize: savedFile.size }
+      });
+      
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        message: 'File from URL sent successfully',
+        fileName: savedFile.name
+      });
+    } else {
+      // Log failure
+      await storage.createSystemLog({
+        level: 'error',
+        message: `Failed to send file from URL to ${to}: ${result.error}`,
+        metadata: { userId, sourceUrl: fileUrl, fileName: savedFile.name }
+      });
+      
+      res.status(400).json({
+        success: false,
+        message: result.error || 'Failed to send file'
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Send file URL error:', error);
+    await storage.createSystemLog({
+      level: 'error',
+      message: `File URL send error: ${error.message}`,
+      metadata: { userId: req.params.userId, fileUrl: req.body.fileUrl, error: error.message }
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send file from URL',
+      error: error.message
+    });
+  }
+});
+
+// Image Upload Endpoint
+router.post('/users/:userId/whatsapp/send-image', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { to, caption, patientName, testName, doctorName } = req.body;
+    const file = req.file;
+
+    // Validate required fields
+    if (!file || !to) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: file and to number are required'
+      });
+    }
+
+    // Validate it's an image
+    if (!file.mimetype.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'File must be an image (JPG, PNG, etc.)'
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(to)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number format. Use E.164 format: +countrycode+number'
+      });
+    }
+
+    // Save uploaded image
+    const savedFile = await fileService.saveFile(file);
+    
+    // Process message template if caption provided
+    let processedCaption = caption || '';
+    if (caption && (patientName || testName || doctorName)) {
+      processedCaption = processMessageTemplate(caption, {
+        patientName,
+        testName,
+        doctorName,
+        reportDate: new Date().toLocaleDateString()
+      });
+    }
+
+    // Send image via WhatsApp
+    const result = await multiWhatsAppService.sendMediaMessage(
+      userId,
+      to,
+      savedFile.filePath,
+      processedCaption
+    );
+
+    if (result.success) {
+      // Log successful send
+      await storage.createSystemLog({
+        level: 'info',
+        message: `Image sent successfully to ${to}`,
+        metadata: { userId, fileName: savedFile.fileName, fileSize: savedFile.size }
+      });
+      
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        message: 'Image sent successfully',
+        fileName: savedFile.fileName
+      });
+    } else {
+      // Log failure
+      await storage.createSystemLog({
+        level: 'error',
+        message: `Failed to send image to ${to}: ${result.error}`,
+        metadata: { userId, fileName: savedFile.fileName }
+      });
+      
+      res.status(400).json({
+        success: false,
+        message: result.error || 'Failed to send image'
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Send image error:', error);
+    await storage.createSystemLog({
+      level: 'error',
+      message: `Image send error: ${error.message}`,
+      metadata: { userId: req.params.userId, error: error.message }
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send image',
+      error: error.message
+    });
+  }
+});
+
+// Text Message Endpoint for users
+router.post('/users/:userId/whatsapp/send-message', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { to, message, patientName, testName, doctorName } = req.body;
+
+    // Validate required fields
+    if (!message || !to) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: message and to number are required'
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(to)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number format. Use E.164 format: +countrycode+number'
+      });
+    }
+
+    // Process message template
+    let processedMessage = message;
+    if (patientName || testName || doctorName) {
+      processedMessage = processMessageTemplate(message, {
+        patientName,
+        testName,
+        doctorName,
+        reportDate: new Date().toLocaleDateString()
+      });
+    }
+
+    // Send text message via WhatsApp
+    const result = await multiWhatsAppService.sendMessage(
+      userId,
+      to,
+      processedMessage
+    );
+
+    if (result.success) {
+      // Log successful send
+      await storage.createSystemLog({
+        level: 'info',
+        message: `Text message sent successfully to ${to}`,
+        metadata: { userId, messageLength: processedMessage.length }
+      });
+      
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        message: 'Text message sent successfully'
+      });
+    } else {
+      // Log failure
+      await storage.createSystemLog({
+        level: 'error',
+        message: `Failed to send text message to ${to}: ${result.error}`,
+        metadata: { userId }
+      });
+      
+      res.status(400).json({
+        success: false,
+        message: result.error || 'Failed to send message'
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Send message error:', error);
+    await storage.createSystemLog({
+      level: 'error',
+      message: `Text message send error: ${error.message}`,
+      metadata: { userId: req.params.userId, error: error.message }
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send text message',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
 // WebSocket Setup
 // ========================================
 

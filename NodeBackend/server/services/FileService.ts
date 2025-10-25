@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import fetch from 'node-fetch';
 
 export interface FileInfo {
   originalName: string;
@@ -101,6 +102,63 @@ export class FileService {
       }
     } catch (error) {
       console.error('Failed to cleanup old files:', error);
+    }
+  }
+
+  async downloadAndSaveFile(fileUrl: string, userId?: string, originalFileName?: string): Promise<{
+    path: string;
+    name: string;
+    size: number;
+  }> {
+    try {
+      // Download the file
+      const response = await fetch(fileUrl);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to download file: ${response.statusText}`);
+      }
+
+      // Get the file buffer
+      const buffer = await response.buffer();
+      
+      // Determine file extension
+      const contentType = response.headers.get('content-type') || '';
+      let extension = '';
+      
+      if (contentType.includes('pdf')) extension = '.pdf';
+      else if (contentType.includes('jpeg')) extension = '.jpg';
+      else if (contentType.includes('png')) extension = '.png';
+      else if (originalFileName) {
+        extension = path.extname(originalFileName);
+      } else {
+        // Try to get extension from URL
+        const urlPath = new URL(fileUrl).pathname;
+        extension = path.extname(urlPath) || '.pdf'; // Default to PDF
+      }
+
+      // Generate unique filename
+      const filename = `${randomUUID()}${extension}`;
+      const filePath = path.join(this.uploadsDir, filename);
+
+      // Validate file size
+      if (buffer.length > this.maxFileSize) {
+        throw new Error(`File size ${buffer.length} exceeds maximum allowed size ${this.maxFileSize}`);
+      }
+
+      // Save the file
+      await fs.promises.writeFile(filePath, buffer);
+
+      console.log(`📁 Downloaded and saved file from URL: ${filename} (${buffer.length} bytes)`);
+
+      return {
+        path: filePath,
+        name: originalFileName || filename,
+        size: buffer.length
+      };
+
+    } catch (error) {
+      console.error('❌ Failed to download file from URL:', error);
+      throw new Error(`File download failed: ${error.message}`);
     }
   }
 
