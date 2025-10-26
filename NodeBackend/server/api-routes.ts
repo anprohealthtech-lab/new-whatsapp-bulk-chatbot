@@ -1,6 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { multiWhatsAppService } from './services/MultiWhatsAppService.js';
+import { multiUserWhatsAppService } from './services/MultiUserWhatsAppService.js';
 import { messageService } from './services/MessageService.js';
 import { fileService } from './services/FileService.js';
 import { storage } from './storage.js';
@@ -534,62 +535,33 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
   try {
     const validatedData = sendReportFromUrlSchema.parse(req.body);
 
-    let targetSession = validatedData.sessionId
-      ? multiWhatsAppService.getSession(validatedData.sessionId)
-      : undefined;
+    const userSessions = multiUserWhatsAppService.getUserSessions(validatedData.userId);
+    const activeSession = userSessions.find(session => session.isConnected) || userSessions[0];
 
-    if (validatedData.sessionId && !targetSession) {
-      return res.status(404).json({
+    if (validatedData.sessionId && activeSession && validatedData.sessionId !== activeSession.sessionId) {
+      return res.status(409).json({
         success: false,
-        error: 'SESSION_NOT_FOUND',
-        message: 'Session not found',
+        error: 'SESSION_MISMATCH',
+        message: 'Provided sessionId does not match active user session',
       });
     }
 
-    if (!targetSession) {
-      const userSessions = multiWhatsAppService.getUserActiveSessions(validatedData.userId);
-      const candidateSession = userSessions.find(session => session.isAuthenticated) || userSessions[0];
-
-      if (candidateSession?.id) {
-        targetSession = multiWhatsAppService.getSession(candidateSession.id);
-      }
-    }
-
-    if (!targetSession) {
-      const fallbackSessions = multiWhatsAppService
-        .getAllSessions()
-        .filter(session => session.userId === validatedData.userId && session.isAuthenticated);
-
-      if (fallbackSessions.length > 0) {
-        targetSession = multiWhatsAppService.getSession(fallbackSessions[0].id);
-      }
-    }
-
-    if (!targetSession) {
-      const dbSessions = await storage.getUserActiveSessions(validatedData.userId);
-
-      for (const sessionRecord of dbSessions) {
-        const candidate = multiWhatsAppService.getSession(sessionRecord.sessionId);
-        if (candidate?.isAuthenticated) {
-          targetSession = candidate;
-          break;
-        }
-      }
-    }
-
-    if (!targetSession) {
-      return res.status(404).json({
+    if (!activeSession) {
+      const status = multiUserWhatsAppService.getUserSessionStatus(validatedData.userId);
+      return res.status(status?.isAuthenticated ? 409 : 404).json({
         success: false,
-        error: 'SESSION_NOT_FOUND',
-        message: 'No active WhatsApp session found for this user',
+        error: status?.isAuthenticated ? 'SESSION_NOT_READY' : 'SESSION_NOT_FOUND',
+        message: status?.isAuthenticated
+          ? 'User has an authenticated session that is currently disconnected'
+          : 'No WhatsApp session found for this user',
       });
     }
 
-    if (!targetSession.isAuthenticated) {
+    if (!activeSession.isConnected) {
       return res.status(409).json({
         success: false,
         error: 'SESSION_NOT_READY',
-        message: 'Session is not connected to WhatsApp',
+        message: 'User session is not connected to WhatsApp',
       });
     }
 
@@ -611,12 +583,17 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
       processedCaption = processedCaption.replace(new RegExp(`\\[${key}\\]`, 'g'), value);
     });
 
-    const messageResult = await multiWhatsAppService.sendMediaMessage(
-      targetSession.id,
+    const sendResult = await multiUserWhatsAppService.sendDocumentFromUser(
+      validatedData.userId,
       validatedData.phoneNumber,
       savedFile.path,
-      processedCaption
+      processedCaption,
+      validatedData.templateData
     );
+
+    if (!sendResult.success) {
+      throw new Error(sendResult.error || 'Failed to send file');
+    }
 
     await storage.createSystemLog({
       level: 'info',
@@ -624,7 +601,7 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
       service: 'whatsapp',
       metadata: {
         userId: validatedData.userId,
-        sessionId: targetSession.id,
+        sessionId: activeSession.sessionId,
         phoneNumber: validatedData.phoneNumber,
         fileUrl: validatedData.fileUrl,
         fileName: savedFile.name,
@@ -636,8 +613,8 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
       success: true,
       message: 'File sent successfully',
       data: {
-        messageId: messageResult.id,
-        sessionId: targetSession.id,
+        messageId: sendResult.messageId,
+        sessionId: activeSession.sessionId,
         to: validatedData.phoneNumber,
         caption: processedCaption,
         fileName: validatedData.fileName || savedFile.name,
