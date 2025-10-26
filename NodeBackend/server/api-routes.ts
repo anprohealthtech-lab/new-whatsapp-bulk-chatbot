@@ -566,6 +566,18 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
     }
 
     if (!targetSession) {
+      const dbSessions = await storage.getUserActiveSessions(validatedData.userId);
+
+      for (const sessionRecord of dbSessions) {
+        const candidate = multiWhatsAppService.getSession(sessionRecord.sessionId);
+        if (candidate?.isAuthenticated) {
+          targetSession = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!targetSession) {
       return res.status(404).json({
         success: false,
         error: 'SESSION_NOT_FOUND',
