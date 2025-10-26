@@ -49,6 +49,16 @@ const sendReportSchema = z.object({
   fileName: z.string().optional(),
 });
 
+const sendReportFromUrlSchema = z.object({
+  userId: z.string().uuid('Invalid user ID'),
+  sessionId: z.string().uuid('Invalid session ID').optional(),
+  phoneNumber: z.string().min(10, 'Phone number must be at least 10 digits'),
+  fileUrl: z.string().url('Invalid file URL'),
+  caption: z.string().optional(),
+  templateData: z.record(z.string()).optional(),
+  fileName: z.string().optional(),
+});
+
 const updateUserInfoSchema = z.object({
   userId: z.string().uuid(),
   username: z.string().optional(),
@@ -511,6 +521,130 @@ router.post('/external/reports/send', apiKeyAuth, upload.single('file'), async (
       error: 'REPORT_SEND_FAILED',
       message: error.message,
     });
+  }
+});
+
+/**
+ * Send Report using remote file URL
+ * POST /api/external/reports/send-url
+ */
+router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
+  let tempFilePath: string | null = null;
+
+  try {
+    const validatedData = sendReportFromUrlSchema.parse(req.body);
+
+    let targetSession = validatedData.sessionId
+      ? multiWhatsAppService.getSession(validatedData.sessionId)
+      : undefined;
+
+    if (validatedData.sessionId && !targetSession) {
+      return res.status(404).json({
+        success: false,
+        error: 'SESSION_NOT_FOUND',
+        message: 'Session not found',
+      });
+    }
+
+    if (!targetSession) {
+      const userSessions = multiWhatsAppService.getUserActiveSessions(validatedData.userId);
+      targetSession = userSessions.find(session => session.isAuthenticated);
+
+      if (!targetSession) {
+        return res.status(404).json({
+          success: false,
+          error: 'SESSION_NOT_FOUND',
+          message: 'No active WhatsApp session found for this user',
+        });
+      }
+    }
+
+    if (!targetSession.isAuthenticated) {
+      return res.status(409).json({
+        success: false,
+        error: 'SESSION_NOT_READY',
+        message: 'Session is not connected to WhatsApp',
+      });
+    }
+
+    const savedFile = await fileService.downloadAndSaveFile(
+      validatedData.fileUrl,
+      validatedData.userId,
+      validatedData.fileName
+    );
+
+    tempFilePath = savedFile.path;
+
+    let processedCaption = validatedData.caption ?? 'Your lab report is ready';
+    const templateEntries = Object.entries({
+      ReportDate: new Date().toLocaleDateString(),
+      ...(validatedData.templateData || {}),
+    });
+
+    templateEntries.forEach(([key, value]) => {
+      processedCaption = processedCaption.replace(new RegExp(`\\[${key}\\]`, 'g'), value);
+    });
+
+    const messageResult = await multiWhatsAppService.sendMediaMessage(
+      targetSession.id,
+      validatedData.phoneNumber,
+      savedFile.path,
+      processedCaption
+    );
+
+    await storage.createSystemLog({
+      level: 'info',
+      message: 'File sent via external URL endpoint',
+      service: 'whatsapp',
+      metadata: {
+        userId: validatedData.userId,
+        sessionId: targetSession.id,
+        phoneNumber: validatedData.phoneNumber,
+        fileUrl: validatedData.fileUrl,
+        fileName: savedFile.name,
+        fileSize: savedFile.size,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'File sent successfully',
+      data: {
+        messageId: messageResult.id,
+        sessionId: targetSession.id,
+        to: validatedData.phoneNumber,
+        caption: processedCaption,
+        fileName: validatedData.fileName || savedFile.name,
+        fileSize: savedFile.size,
+        sentAt: new Date().toISOString(),
+        sessionWasAutoSelected: !validatedData.sessionId,
+      },
+    });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Invalid request payload',
+        details: error.flatten(),
+      });
+    }
+
+    console.error('Report send via URL failed:', error);
+
+    const statusCode = typeof error?.message === 'string' && error.message.toLowerCase().includes('download')
+      ? 424
+      : 500;
+
+    return res.status(statusCode).json({
+      success: false,
+      error: 'REPORT_URL_SEND_FAILED',
+      message: error?.message || 'Failed to send report using URL',
+    });
+  } finally {
+    if (tempFilePath) {
+      await fileService.deleteFile(tempFilePath);
+    }
   }
 });
 
