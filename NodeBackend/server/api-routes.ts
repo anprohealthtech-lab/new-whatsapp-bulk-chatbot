@@ -548,15 +548,29 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
 
     if (!targetSession) {
       const userSessions = multiWhatsAppService.getUserActiveSessions(validatedData.userId);
-      targetSession = userSessions.find(session => session.isAuthenticated);
+      const candidateSession = userSessions.find(session => session.isAuthenticated) || userSessions[0];
 
-      if (!targetSession) {
-        return res.status(404).json({
-          success: false,
-          error: 'SESSION_NOT_FOUND',
-          message: 'No active WhatsApp session found for this user',
-        });
+      if (candidateSession?.id) {
+        targetSession = multiWhatsAppService.getSession(candidateSession.id);
       }
+    }
+
+    if (!targetSession) {
+      const fallbackSessions = multiWhatsAppService
+        .getAllSessions()
+        .filter(session => session.userId === validatedData.userId && session.isAuthenticated);
+
+      if (fallbackSessions.length > 0) {
+        targetSession = multiWhatsAppService.getSession(fallbackSessions[0].id);
+      }
+    }
+
+    if (!targetSession) {
+      return res.status(404).json({
+        success: false,
+        error: 'SESSION_NOT_FOUND',
+        message: 'No active WhatsApp session found for this user',
+      });
     }
 
     if (!targetSession.isAuthenticated) {
