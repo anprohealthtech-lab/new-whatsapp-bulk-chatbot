@@ -299,9 +299,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
   ): Promise<WASocket> {
     console.log(`🔌 Creating socket for ${userSession.userName} with persistent auth: ${userSession.authPath}`);
 
-    // Create stable browser identifier (don't change on every reconnect)
+    // Create stable per-user browser identifier (consistent across reconnections)
+    // Use userId hash to keep it stable but unique per user
+    const userHash = userSession.userId.substring(0, 8);
     const uniqueBrowser = [
-      'WhatsApp LIMS',
+      `${userSession.clinicName || 'LIMS'}-${userSession.userName}-${userHash}`,
       'Chrome',
       '10.0'
     ];
