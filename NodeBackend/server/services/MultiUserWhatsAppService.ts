@@ -893,10 +893,12 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
       if (shouldReconnect && s.reconnectAttempts < this.maxReconnectAttempts) {
         let baseDelay: number;
+        let skipJitter = false; // Flag to skip jitter for fast reconnects
 
         // SPECIAL CASE: Code 515 during QR pairing - immediate reconnect (no delay)
         if (restartRequired && wasPairing && s.reconnectAttempts <= 3) {
-          baseDelay = 1000; // Just 1 second for pairing flow
+          baseDelay = 500; // Just 500ms for instant pairing flow
+          skipJitter = true; // No jitter for pairing
           console.log(`⚡ Fast reconnect for ${s.userName} - Code 515 after QR scan (pairing flow)`);
         } else if (code === 0) {
           baseDelay = Math.min(30000 * Math.pow(1.8, s.reconnectAttempts), 600000); // up to 10m
@@ -910,7 +912,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
           baseDelay = Math.min(10000 * Math.pow(2, s.reconnectAttempts), 120000); // up to 2m
         }
 
-        const jitter = Math.random() * 3000;
+        const jitter = skipJitter ? 0 : Math.random() * 3000;
         const delay = baseDelay + jitter;
 
         clearTimeout(s.reconnectTimeout);
