@@ -769,6 +769,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
     // 3) CLOSE
     if (connection === 'close') {
       s.isConnected = false;
+      const wasPairing = s.isPairing; // Track if we were in pairing state
       s.isPairing = false;
       s.status = 'disconnected';
 
@@ -893,7 +894,11 @@ export class MultiUserWhatsAppService extends EventEmitter {
       if (shouldReconnect && s.reconnectAttempts < this.maxReconnectAttempts) {
         let baseDelay: number;
 
-        if (code === 0) {
+        // SPECIAL CASE: Code 515 during QR pairing - immediate reconnect (no delay)
+        if (restartRequired && wasPairing && s.reconnectAttempts <= 3) {
+          baseDelay = 1000; // Just 1 second for pairing flow
+          console.log(`⚡ Fast reconnect for ${s.userName} - Code 515 after QR scan (pairing flow)`);
+        } else if (code === 0) {
           baseDelay = Math.min(30000 * Math.pow(1.8, s.reconnectAttempts), 600000); // up to 10m
         } else if (restartRequired) {
           baseDelay = 8000;
