@@ -299,73 +299,69 @@ export class MultiUserWhatsAppService extends EventEmitter {
   ): Promise<WASocket> {
     console.log(`🔌 Creating socket for ${userSession.userName} with persistent auth: ${userSession.authPath}`);
 
-    // Create unique browser identifier to prevent device conflicts
-    const timestamp = Date.now();
-    const randomId = Math.random().toString(36).substring(7);
+    // Create stable browser identifier (don't change on every reconnect)
     const uniqueBrowser = [
-      `${userSession.clinicName || 'LIMS'}-${userSession.userName}-${timestamp}-${randomId}`, 
-      'Chrome', 
-      '1.0.0'
+      'WhatsApp LIMS',
+      'Chrome',
+      '10.0'
     ];
 
     const socket = makeWASocket({
       version,
       auth: authState,
       printQRInTerminal: false,
-      browser: uniqueBrowser, // Use unique browser identifier
-      generateHighQualityLinkPreview: false, // Disable to avoid link-preview-js errors
+      browser: uniqueBrowser,
+      generateHighQualityLinkPreview: false,
       
-      // Complete logger implementation to prevent "logger.error is not a function" errors
-      logger: process.env.BAILEYS_LOG_LEVEL === 'error' ? {
-        level: 'error',
-        trace: () => {},
-        debug: () => {},
-        info: () => {},
-        warn: () => {},
+      // Silent logger to reduce noise
+      logger: {
+        level: 'silent',
+        fatal: () => {},
         error: () => {},
-        child: () => ({
-          level: 'error',
-          trace: () => {},
-          debug: () => {},
-          info: () => {},
-          warn: () => {},
-          error: () => {}
-        })
-      } : undefined,
-      
-      // Ignore problematic message types that cause PreKey errors
-      shouldIgnoreJid: (jid: string) => {
-        // Ignore status broadcasts and group messages during initial sync
-        return (jid.includes('status@broadcast')) || 
-               (jid.includes('@g.us') && !userSession.isAuthenticated);
-      },
+        warn: () => {},
+        info: () => {},
+        debug: () => {},
+        trace: () => {}
+      } as any,
       
       // Handle message failures gracefully
       getMessage: async (key: any) => {
-        // Return undefined for messages we can't decrypt (normal behavior)
         return undefined;
       },
       
-      // Connection timeouts and retry configuration
-      defaultQueryTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
-      connectTimeoutMs: parseInt(process.env.WHATSAPP_CONNECTION_TIMEOUT || '60000'),
-      keepAliveIntervalMs: parseInt(process.env.WHATSAPP_KEEP_ALIVE_INTERVAL || '25000'),
-      qrTimeout: parseInt(process.env.WHATSAPP_QR_TIMEOUT || '300000'),
-      retryRequestDelayMs: 2000, // Increased from 1000 to reduce conflicts
-      maxMsgRetryCount: 1, // Reduced from 2 to minimize retry conflicts
-      markOnlineOnConnect: false,
+      // Optimized connection settings for stability
+      defaultQueryTimeoutMs: 60000,
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 30000, // Increased from 25s to 30s
+      qrTimeout: 60000, // 60 seconds for QR scan
+      retryRequestDelayMs: 3000, // Increased to 3s
+      maxMsgRetryCount: 3,
+      
+      // Critical stability settings
+      markOnlineOnConnect: true, // Changed to true to maintain presence
       syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
-      shouldIgnoreJid: () => false,
-      emitOwnEvents: false,
       fireInitQueries: true,
+      
+      // Simplified transaction options
       transactionOpts: {
-        maxCommitRetries: 1, // Reduced from 2 to prevent conflicts
-        delayBetweenTriesMs: 2000 // Increased from 1000 to reduce race conditions
+        maxCommitRetries: 3,
+        delayBetweenTriesMs: 3000
+      },
+      
+      // Add mobile flag for better compatibility
+      mobile: false,
+      
+      // Proper message handling
+      shouldSyncHistoryMessage: () => false,
+      shouldIgnoreJid: (jid: string) => jid.includes('status@broadcast'),
+      
+      // Patch socket options for better stability
+      patchMessageBeforeSending: (msg: any) => {
+        return msg;
       }
     });
 
-    console.log(`🔌 Created socket with unique browser ID: ${uniqueBrowser[0]}`);
+    console.log(`🔌 Created socket with browser ID: ${uniqueBrowser.join(' ')}`);
 
     // Connection updates
     socket.ev.on('connection.update', async (update: any) => {
