@@ -315,7 +315,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
       browser: uniqueBrowser,
       generateHighQualityLinkPreview: false,
       
-      // Silent logger to reduce noise
+      // Silent logger with child support
       logger: {
         level: 'silent',
         fatal: () => {},
@@ -323,7 +323,16 @@ export class MultiUserWhatsAppService extends EventEmitter {
         warn: () => {},
         info: () => {},
         debug: () => {},
-        trace: () => {}
+        trace: () => {},
+        child: () => ({
+          level: 'silent',
+          fatal: () => {},
+          error: () => {},
+          warn: () => {},
+          info: () => {},
+          debug: () => {},
+          trace: () => {}
+        })
       } as any,
       
       // Handle message failures gracefully
