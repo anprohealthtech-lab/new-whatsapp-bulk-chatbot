@@ -95,6 +95,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       broadcast('user-status-update', data);
     });
 
+    multiUserWhatsAppService.on('user-connected', (data) => {
+      console.log('🎯 ROUTES: User successfully connected:', data);
+      broadcast('user-connected', data);
+    });
+
     multiUserWhatsAppService.on('user-authenticated', (data) => {
       broadcast('user-authenticated', data);
     });
