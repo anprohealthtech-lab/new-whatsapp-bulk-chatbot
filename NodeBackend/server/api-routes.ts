@@ -51,7 +51,7 @@ const sendReportSchema = z.object({
 });
 
 const sendReportFromUrlSchema = z.object({
-  userId: z.string().uuid('Invalid user ID'),
+  userId: z.string().min(1, 'User ID or username is required'),
   sessionId: z.string().uuid('Invalid session ID').optional(),
   phoneNumber: z.string().min(10, 'Phone number must be at least 10 digits'),
   fileUrl: z.string().url('Invalid file URL'),
@@ -61,7 +61,7 @@ const sendReportFromUrlSchema = z.object({
 });
 
 const sendMessageUserSchema = z.object({
-  userId: z.string().uuid('Invalid user ID'),
+  userId: z.string().min(1, 'User ID or username is required'),
   sessionId: z.string().uuid('Invalid session ID').optional(),
   phoneNumber: z.string().min(10, 'Phone number must be at least 10 digits'),
   message: z.string().min(1, 'Message content is required'),
@@ -76,6 +76,36 @@ const updateUserInfoSchema = z.object({
   organizationId: z.string().uuid().optional(),
   organizationName: z.string().optional(),
 });
+
+// ========================================
+// Helper Functions
+// ========================================
+
+/**
+ * Resolve userId from either UUID or username
+ * Accepts both formats: UUID string or username string
+ */
+async function resolveUserId(userIdOrUsername: string): Promise<{ userId: string; resolvedBy: 'uuid' | 'username' } | null> {
+  // Check if it's a valid UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  
+  if (uuidRegex.test(userIdOrUsername)) {
+    // It's a UUID, use directly
+    return { userId: userIdOrUsername, resolvedBy: 'uuid' };
+  }
+  
+  // It's not a UUID, try to lookup by username
+  try {
+    const user = await storage.getUserByUsername(userIdOrUsername);
+    if (user && user.id) {
+      return { userId: user.id, resolvedBy: 'username' };
+    }
+  } catch (error) {
+    console.error(`Failed to resolve username '${userIdOrUsername}':`, error);
+  }
+  
+  return null;
+}
 
 // ========================================
 // External API Authentication Middleware
@@ -460,7 +490,18 @@ router.post('/external/messages/send-user', apiKeyAuth, async (req, res) => {
   try {
     const validatedData = sendMessageUserSchema.parse(req.body);
 
-    const userSessions = multiUserWhatsAppService.getUserSessions(validatedData.userId);
+    // Resolve userId from UUID or username
+    const resolved = await resolveUserId(validatedData.userId);
+    if (!resolved) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: `User not found: ${validatedData.userId}`,
+      });
+    }
+
+    const userId = resolved.userId;
+    const userSessions = multiUserWhatsAppService.getUserSessions(userId);
     const activeSession = userSessions.find(session => session.isConnected) || userSessions[0];
 
     if (validatedData.sessionId && activeSession && validatedData.sessionId !== activeSession.sessionId) {
@@ -491,7 +532,7 @@ router.post('/external/messages/send-user', apiKeyAuth, async (req, res) => {
     }
 
     const sendResult = await multiUserWhatsAppService.sendMessageFromUser(
-      validatedData.userId,
+      userId,
       validatedData.phoneNumber,
       validatedData.message,
       validatedData.templateData
@@ -506,7 +547,9 @@ router.post('/external/messages/send-user', apiKeyAuth, async (req, res) => {
       message: 'Message sent via external user-based endpoint',
       service: 'whatsapp',
       metadata: {
-        userId: validatedData.userId,
+        userId: userId,
+        userIdInput: validatedData.userId,
+        resolvedBy: resolved.resolvedBy,
         sessionId: activeSession.sessionId,
         phoneNumber: validatedData.phoneNumber,
         messageLength: validatedData.message.length,
@@ -519,6 +562,9 @@ router.post('/external/messages/send-user', apiKeyAuth, async (req, res) => {
       data: {
         messageId: sendResult.messageId,
         sessionId: activeSession.sessionId,
+        userId: userId,
+        userIdInput: validatedData.userId,
+        resolvedBy: resolved.resolvedBy,
         to: validatedData.phoneNumber,
         sentAt: new Date().toISOString(),
         sessionWasAutoSelected: !validatedData.sessionId,
@@ -635,7 +681,18 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
   try {
     const validatedData = sendReportFromUrlSchema.parse(req.body);
 
-    const userSessions = multiUserWhatsAppService.getUserSessions(validatedData.userId);
+    // Resolve userId from UUID or username
+    const resolved = await resolveUserId(validatedData.userId);
+    if (!resolved) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: `User not found: ${validatedData.userId}`,
+      });
+    }
+
+    const userId = resolved.userId;
+    const userSessions = multiUserWhatsAppService.getUserSessions(userId);
     const activeSession = userSessions.find(session => session.isConnected) || userSessions[0];
 
     if (validatedData.sessionId && activeSession && validatedData.sessionId !== activeSession.sessionId) {
@@ -667,7 +724,7 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
 
     const savedFile = await fileService.downloadAndSaveFile(
       validatedData.fileUrl,
-      validatedData.userId,
+      userId,
       validatedData.fileName
     );
 
@@ -684,7 +741,7 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
     });
 
     const sendResult = await multiUserWhatsAppService.sendDocumentFromUser(
-      validatedData.userId,
+      userId,
       validatedData.phoneNumber,
       savedFile.path,
       processedCaption,
@@ -700,7 +757,9 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
       message: 'File sent via external URL endpoint',
       service: 'whatsapp',
       metadata: {
-        userId: validatedData.userId,
+        userId: userId,
+        userIdInput: validatedData.userId,
+        resolvedBy: resolved.resolvedBy,
         sessionId: activeSession.sessionId,
         phoneNumber: validatedData.phoneNumber,
         fileUrl: validatedData.fileUrl,
@@ -715,6 +774,9 @@ router.post('/external/reports/send-url', apiKeyAuth, async (req, res) => {
       data: {
         messageId: sendResult.messageId,
         sessionId: activeSession.sessionId,
+        userId: userId,
+        userIdInput: validatedData.userId,
+        resolvedBy: resolved.resolvedBy,
         to: validatedData.phoneNumber,
         caption: processedCaption,
         fileName: validatedData.fileName || savedFile.name,
