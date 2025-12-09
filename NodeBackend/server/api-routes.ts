@@ -60,6 +60,14 @@ const sendReportFromUrlSchema = z.object({
   fileName: z.string().optional(),
 });
 
+const sendMessageUserSchema = z.object({
+  userId: z.string().uuid('Invalid user ID'),
+  sessionId: z.string().uuid('Invalid session ID').optional(),
+  phoneNumber: z.string().min(10, 'Phone number must be at least 10 digits'),
+  message: z.string().min(1, 'Message content is required'),
+  templateData: z.record(z.string()).optional(),
+});
+
 const updateUserInfoSchema = z.object({
   userId: z.string().uuid(),
   username: z.string().optional(),
@@ -440,6 +448,98 @@ router.post('/external/messages/send', apiKeyAuth, async (req, res) => {
       success: false,
       error: 'MESSAGE_SEND_FAILED',
       message: error.message,
+    });
+  }
+});
+
+/**
+ * Send Text Message (User-based)
+ * POST /api/external/messages/send-user
+ */
+router.post('/external/messages/send-user', apiKeyAuth, async (req, res) => {
+  try {
+    const validatedData = sendMessageUserSchema.parse(req.body);
+
+    const userSessions = multiUserWhatsAppService.getUserSessions(validatedData.userId);
+    const activeSession = userSessions.find(session => session.isConnected) || userSessions[0];
+
+    if (validatedData.sessionId && activeSession && validatedData.sessionId !== activeSession.sessionId) {
+      return res.status(409).json({
+        success: false,
+        error: 'SESSION_MISMATCH',
+        message: 'Provided sessionId does not match active user session',
+      });
+    }
+
+    if (!activeSession) {
+      const status = multiUserWhatsAppService.getUserSessionStatus(validatedData.userId);
+      return res.status(status?.isAuthenticated ? 409 : 404).json({
+        success: false,
+        error: status?.isAuthenticated ? 'SESSION_NOT_READY' : 'SESSION_NOT_FOUND',
+        message: status?.isAuthenticated
+          ? 'User has an authenticated session that is currently disconnected'
+          : 'No WhatsApp session found for this user',
+      });
+    }
+
+    if (!activeSession.isConnected) {
+      return res.status(409).json({
+        success: false,
+        error: 'SESSION_NOT_READY',
+        message: 'User session is not connected to WhatsApp',
+      });
+    }
+
+    const sendResult = await multiUserWhatsAppService.sendMessageFromUser(
+      validatedData.userId,
+      validatedData.phoneNumber,
+      validatedData.message,
+      validatedData.templateData
+    );
+
+    if (!sendResult.success) {
+      throw new Error(sendResult.error || 'Failed to send message');
+    }
+
+    await storage.createSystemLog({
+      level: 'info',
+      message: 'Message sent via external user-based endpoint',
+      service: 'whatsapp',
+      metadata: {
+        userId: validatedData.userId,
+        sessionId: activeSession.sessionId,
+        phoneNumber: validatedData.phoneNumber,
+        messageLength: validatedData.message.length,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Message sent successfully',
+      data: {
+        messageId: sendResult.messageId,
+        sessionId: activeSession.sessionId,
+        to: validatedData.phoneNumber,
+        sentAt: new Date().toISOString(),
+        sessionWasAutoSelected: !validatedData.sessionId,
+      },
+    });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Invalid request payload',
+        details: error.flatten(),
+      });
+    }
+
+    console.error('User message send failed:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: 'MESSAGE_SEND_FAILED',
+      message: error?.message || 'Failed to send message',
     });
   }
 });
