@@ -956,4 +956,200 @@ router.get('/external/messages/history', apiKeyAuth, async (req, res) => {
   }
 });
 
+// ========================================
+// Session Health & Monitoring APIs
+// ========================================
+
+/**
+ * Get Health Status of All WhatsApp Sessions
+ * GET /api/external/sessions/health
+ * Returns all active sessions with their status for external monitoring
+ */
+router.get('/external/sessions/health', apiKeyAuth, async (req, res) => {
+  try {
+    const sessions = multiUserWhatsAppService.getSessionsHealth();
+    const activeSessions = sessions.filter(s => s.isConnected && s.isAuthenticated);
+    
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      totalSessions: sessions.length,
+      activeSessions: activeSessions.length,
+      sessions: sessions
+    });
+  } catch (error: any) {
+    console.error('Error getting sessions health:', error);
+    res.status(500).json({
+      success: false,
+      error: 'HEALTH_CHECK_FAILED',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Pulse Check for Specific User
+ * POST /api/external/sessions/pulse
+ * External apps can call periodically to verify session is alive
+ * Body: { userId: "uuid-or-username" }
+ */
+router.post('/external/sessions/pulse', apiKeyAuth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_USER_ID',
+        message: 'userId is required'
+      });
+    }
+
+    // Resolve userId (supports both UUID and username)
+    const resolved = await resolveUserId(userId);
+    if (!resolved) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: `User not found: ${userId}`
+      });
+    }
+
+    const pulse = await multiUserWhatsAppService.pulseCheck(resolved.userId);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      userIdInput: userId,
+      resolvedBy: resolved.resolvedBy,
+      ...pulse
+    });
+  } catch (error: any) {
+    console.error('Error checking pulse:', error);
+    res.status(500).json({
+      success: false,
+      error: 'PULSE_CHECK_FAILED',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Bulk Pulse Check for Multiple Users
+ * POST /api/external/sessions/bulk-pulse
+ * Check multiple user sessions at once
+ * Body: { userIds: ["uuid1", "username2", ...] }
+ */
+router.post('/external/sessions/bulk-pulse', apiKeyAuth, async (req, res) => {
+  try {
+    const { userIds } = req.body;
+
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_USER_IDS',
+        message: 'userIds array is required'
+      });
+    }
+
+    const results = [];
+    for (const userId of userIds) {
+      try {
+        const resolved = await resolveUserId(userId);
+        if (resolved) {
+          const pulse = await multiUserWhatsAppService.pulseCheck(resolved.userId);
+          results.push({
+            userIdInput: userId,
+            resolvedBy: resolved.resolvedBy,
+            ...pulse
+          });
+        } else {
+          results.push({
+            userIdInput: userId,
+            alive: false,
+            error: 'USER_NOT_FOUND'
+          });
+        }
+      } catch (err: any) {
+        results.push({
+          userIdInput: userId,
+          alive: false,
+          error: err.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      totalChecked: userIds.length,
+      aliveCount: results.filter(r => r.alive).length,
+      results
+    });
+  } catch (error: any) {
+    console.error('Error checking bulk pulse:', error);
+    res.status(500).json({
+      success: false,
+      error: 'BULK_PULSE_FAILED',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Disconnect a User's WhatsApp Session
+ * POST /api/external/sessions/disconnect
+ * External apps can disconnect a user's session
+ * Body: { userId: "uuid-or-username" }
+ */
+router.post('/external/sessions/disconnect', apiKeyAuth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_USER_ID',
+        message: 'userId is required'
+      });
+    }
+
+    // Resolve userId
+    const resolved = await resolveUserId(userId);
+    if (!resolved) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: `User not found: ${userId}`
+      });
+    }
+
+    const disconnected = await multiUserWhatsAppService.disconnectUserSession(resolved.userId);
+
+    if (disconnected) {
+      res.json({
+        success: true,
+        message: 'Session disconnected successfully',
+        userId: resolved.userId,
+        userIdInput: userId,
+        resolvedBy: resolved.resolvedBy,
+        authPreserved: true
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'SESSION_NOT_FOUND',
+        message: 'No active session found for this user'
+      });
+    }
+  } catch (error: any) {
+    console.error('Error disconnecting session:', error);
+    res.status(500).json({
+      success: false,
+      error: 'DISCONNECT_FAILED',
+      message: error.message
+    });
+  }
+});
+
 export { router as externalApiRoutes };

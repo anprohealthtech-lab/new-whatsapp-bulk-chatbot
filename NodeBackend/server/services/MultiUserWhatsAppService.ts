@@ -52,6 +52,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
     string,
     { connects: number; disconnects: number; lastStableConnection?: Date }
   >();
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private midnightCheckInterval: NodeJS.Timeout | null = null;
+  private lastMidnightCleanup: string | null = null;
 
   private readonly SESSION_STRATEGIES: Record<string, SessionStrategy> = {
     business_hours: {
@@ -88,12 +91,20 @@ export class MultiUserWhatsAppService extends EventEmitter {
     // Schedule daily database cleanup at 9 PM IST (3:30 PM UTC)
     this.scheduleDailyDatabaseCleanup();
 
+    // Setup heartbeat to keep sessions alive
+    this.setupHeartbeat();
+
+    // Setup midnight IST cleanup for daily session reset
+    this.setupMidnightCleanup();
+
     log(`🚀 Multi-User WhatsApp Service initialized with limits:`);
     log(`   - Max Global Sessions: ${this.maxGlobalSessions}`);
     log(`   - Max Sessions Per User: ${process.env.WHATSAPP_MAX_SESSIONS_PER_USER || 3}`);
     log(`   - Cleanup Interval: ${cleanupInterval / 1000}s`);
     log(`   - Inactive Timeout: ${process.env.INACTIVE_SESSION_TIMEOUT || 300000}ms`);
     log(`   - Daily DB Cleanup: 9:00 PM IST (3:30 PM UTC)`);
+    log(`   - Heartbeat: Every 30 minutes`);
+    log(`   - Midnight IST Cleanup: 12:00 AM IST daily`);
   }
 
   private ensureAuthDirectory() {
@@ -179,6 +190,210 @@ export class MultiUserWhatsAppService extends EventEmitter {
         metadata: JSON.stringify({ error: (error as Error).message })
       });
     }
+  }
+
+  /**
+   * Setup internal heartbeat - keeps sessions alive by checking health every 30 minutes
+   */
+  private setupHeartbeat(): void {
+    const intervalMs = 30 * 60 * 1000; // 30 minutes
+
+    this.heartbeatInterval = setInterval(async () => {
+      const sessions = Array.from(this.userSessionsByUser.values());
+      const activeSessions = sessions.filter(s => s.socket && s.isAuthenticated);
+      
+      console.log(`💓 Heartbeat: ${activeSessions.length}/${sessions.length} sessions active`);
+
+      for (const session of activeSessions) {
+        session.lastActivity = new Date();
+        console.log(`💓 ${session.userName}: alive (${session.clinicName})`);
+      }
+
+      // Log heartbeat to database
+      if (sessions.length > 0) {
+        await storage.createSystemLog({
+          level: 'info',
+          message: `Heartbeat check: ${activeSessions.length} active sessions`,
+          service: 'whatsapp',
+          metadata: JSON.stringify({
+            totalSessions: sessions.length,
+            activeSessions: activeSessions.length,
+            userNames: activeSessions.map(s => s.userName)
+          })
+        });
+      }
+    }, intervalMs);
+
+    console.log('💓 Heartbeat initialized (every 30 minutes)');
+  }
+
+  /**
+   * Setup midnight IST cleanup - disconnects all sessions once daily at 12:00 AM IST
+   * Auth directories are preserved so users can reconnect easily
+   */
+  private setupMidnightCleanup(): void {
+    this.midnightCheckInterval = setInterval(async () => {
+      const now = new Date();
+      // Convert to IST (UTC + 5:30)
+      const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+      const hours = istTime.getUTCHours();
+      const minutes = istTime.getUTCMinutes();
+      const today = istTime.toISOString().split('T')[0]; // YYYY-MM-DD
+
+      // Trigger at 00:00 IST, only once per day
+      if (hours === 0 && minutes === 0 && this.lastMidnightCleanup !== today) {
+        this.lastMidnightCleanup = today;
+        console.log('🕛 Midnight IST - Starting daily session cleanup...');
+        await this.performMidnightCleanup();
+      }
+    }, 60 * 1000); // Check every minute
+
+    console.log('🕐 Midnight cleanup scheduled (12:00 AM IST daily)');
+  }
+
+  /**
+   * Perform midnight cleanup - disconnect all sessions, preserve auth
+   */
+  private async performMidnightCleanup(): Promise<void> {
+    const activeSessions = Array.from(this.userSessionsByUser.values())
+      .filter(s => s.socket && s.isAuthenticated);
+
+    await storage.createSystemLog({
+      level: 'info',
+      message: `Daily midnight cleanup started: ${activeSessions.length} sessions`,
+      service: 'whatsapp',
+      metadata: JSON.stringify({
+        sessionCount: activeSessions.length,
+        userNames: activeSessions.map(s => s.userName),
+        trigger: 'midnight_ist_cleanup'
+      })
+    });
+
+    if (activeSessions.length === 0) {
+      console.log('🕛 No active sessions to cleanup at midnight');
+      return;
+    }
+
+    console.log(`🕛 Disconnecting ${activeSessions.length} sessions for daily cleanup...`);
+
+    for (const session of activeSessions) {
+      try {
+        console.log(`🕛 Disconnecting ${session.userName} (${session.clinicName}) for daily cleanup...`);
+        
+        if (session.reconnectTimeout) {
+          clearTimeout(session.reconnectTimeout);
+          session.reconnectTimeout = undefined;
+        }
+
+        if (session.socket) {
+          session.socket.end(undefined);
+          session.socket = null;
+        }
+
+        // Update database - mark inactive but preserve session
+        await storage.updateUserWhatsAppSession(session.userId, {
+          isActive: false,
+          isAuthenticated: false,
+          updatedAt: new Date()
+        });
+
+        // Emit disconnect event
+        this.emit('user-disconnected', {
+          sessionId: session.sessionId,
+          userId: session.userId,
+          userName: session.userName,
+          clinicName: session.clinicName,
+          shouldReconnect: false,
+          reason: 'daily_midnight_cleanup'
+        });
+
+      } catch (error) {
+        console.error(`🕛 Error disconnecting ${session.userName}:`, error);
+      }
+    }
+
+    // Clear in-memory sessions
+    this.userSessionsByUser.clear();
+
+    console.log('🕛 Daily midnight cleanup completed. Auth preserved - users can reconnect.');
+
+    await storage.createSystemLog({
+      level: 'info',
+      message: 'Daily midnight cleanup completed',
+      service: 'whatsapp',
+      metadata: JSON.stringify({
+        sessionsDisconnected: activeSessions.length,
+        completedAt: new Date().toISOString()
+      })
+    });
+  }
+
+  /**
+   * Get health status of all sessions - for external monitoring
+   */
+  getSessionsHealth(): Array<{
+    userId: string;
+    userName: string;
+    clinicName: string;
+    isConnected: boolean;
+    isAuthenticated: boolean;
+    lastActivity: Date;
+    phoneNumber: string | undefined;
+    sessionId: string;
+    status: string;
+  }> {
+    return Array.from(this.userSessionsByUser.values()).map(s => ({
+      userId: s.userId,
+      userName: s.userName,
+      clinicName: s.clinicName,
+      isConnected: s.isConnected,
+      isAuthenticated: s.isAuthenticated,
+      lastActivity: s.lastActivity,
+      phoneNumber: s.phoneNumber,
+      sessionId: s.sessionId,
+      status: s.status
+    }));
+  }
+
+  /**
+   * Pulse check for specific user - external apps can call to verify session is alive
+   */
+  async pulseCheck(userId: string): Promise<{
+    alive: boolean;
+    userId: string;
+    userName?: string;
+    clinicName?: string;
+    isAuthenticated: boolean;
+    lastActivity: Date | null;
+    phoneNumber: string | undefined;
+    status: string;
+  }> {
+    const session = this.userSessionsByUser.get(userId);
+
+    if (!session) {
+      return {
+        alive: false,
+        userId,
+        isAuthenticated: false,
+        lastActivity: null,
+        phoneNumber: undefined,
+        status: 'not_found'
+      };
+    }
+
+    // Update last activity on pulse
+    session.lastActivity = new Date();
+
+    return {
+      alive: !!session.socket && session.isConnected,
+      userId: session.userId,
+      userName: session.userName,
+      clinicName: session.clinicName,
+      isAuthenticated: session.isAuthenticated,
+      lastActivity: session.lastActivity,
+      phoneNumber: session.phoneNumber,
+      status: session.status
+    };
   }
 
   /**
@@ -807,8 +1022,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
         updatedAt: new Date()
       });
 
-      // IMMEDIATE DATABASE CLEANUP: Delete failed sessions for specific error codes
-      if (loggedOut || connectionReplaced || badSession || code === 401 || code === 440 || code === 500) {
+      // IMMEDIATE DATABASE CLEANUP: Only delete for explicit logout (401) or connection replaced (440)
+      // Code 500 (Bad Session) should mark inactive but allow retry
+      if (loggedOut || connectionReplaced || code === 401 || code === 440) {
         console.log(`🗑️ IMMEDIATE CLEANUP: Deleting session ${sessionId} due to error code ${code} (${this.getDisconnectReason(code)})`);
         try {
           await storage.deleteWhatsAppSession(sessionId);
@@ -828,6 +1044,31 @@ export class MultiUserWhatsAppService extends EventEmitter {
           });
         } catch (deleteError) {
           console.error(`❌ Failed to delete session ${sessionId}:`, deleteError);
+        }
+      } else if (badSession || code === 500) {
+        // Code 500 - mark inactive but don't delete (allow retry)
+        console.log(`⚠️ MARKING INACTIVE: Session ${sessionId} due to Code 500 (Bad Session) - retry allowed`);
+        try {
+          await storage.updateUserWhatsAppSession(s.userId, {
+            isActive: false,
+            isAuthenticated: false,
+            updatedAt: new Date()
+          });
+          
+          await storage.createSystemLog({
+            level: 'warning',
+            message: `Session marked inactive due to Code 500 (retry allowed)`,
+            service: 'whatsapp',
+            userId: s.userId,
+            metadata: JSON.stringify({ 
+              sessionId, 
+              disconnectCode: code, 
+              reason: 'Bad Session - Retry Possible',
+              userName: s.userName
+            })
+          });
+        } catch (updateError) {
+          console.error(`❌ Failed to update session ${sessionId}:`, updateError);
         }
       }
 
@@ -1203,7 +1444,7 @@ export class MultiUserWhatsAppService extends EventEmitter {
   }
 
   /**
-   * Disconnect specific user session
+   * Disconnect specific user session with proper logging and events
    */
   async disconnectUserSession(userId: string): Promise<boolean> {
     try {
@@ -1213,12 +1454,67 @@ export class MultiUserWhatsAppService extends EventEmitter {
         return false;
       }
 
-      if (userSession.socket) {
-        await userSession.socket.logout();
+      const userName = userSession.userName;
+      const clinicName = userSession.clinicName;
+      const sessionId = userSession.sessionId;
+
+      console.log(`🔌 User requested disconnect for ${userName} (${clinicName})`);
+
+      // Clear reconnect timeout
+      if (userSession.reconnectTimeout) {
+        clearTimeout(userSession.reconnectTimeout);
+        userSession.reconnectTimeout = undefined;
       }
 
-      await this.cleanupUserSession(userId);
-      console.log(`🔌 Disconnected session for ${userSession.userName} (${userSession.clinicName})`);
+      // Close socket gracefully
+      if (userSession.socket) {
+        try {
+          userSession.socket.end(undefined);
+        } catch (e: any) {
+          console.log(`⚠️ Error ending socket:`, e.message || e);
+        }
+        userSession.socket = null;
+      }
+
+      // Update database - mark inactive
+      await storage.updateUserWhatsAppSession(userId, {
+        isAuthenticated: false,
+        isActive: false,
+        updatedAt: new Date()
+      });
+
+      // Emit disconnect event for frontend
+      this.emit('user-disconnected', {
+        sessionId,
+        userId,
+        userName,
+        clinicName,
+        shouldReconnect: false,
+        reason: 'user_requested_disconnect'
+      });
+
+      // Log to system logs
+      await storage.createSystemLog({
+        level: 'info',
+        message: 'User actively disconnected WhatsApp session',
+        service: 'whatsapp',
+        userId,
+        sessionId,
+        metadata: JSON.stringify({
+          userName,
+          clinicName,
+          reason: 'user_requested_disconnect',
+          authPreserved: true
+        })
+      });
+
+      // Remove from memory
+      this.userSessionsByUser.delete(userId);
+
+      // Preserve auth directory
+      console.log(`🔒 Auth preserved for ${userName}: ${userSession.authPath}`);
+      console.log(`✅ Successfully disconnected ${userName}`);
+      
       return true;
     } catch (error: any) {
       console.error(`❌ Failed to disconnect session ${userId}:`, error);
