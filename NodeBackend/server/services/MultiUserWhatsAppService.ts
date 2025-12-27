@@ -1003,10 +1003,12 @@ export class MultiUserWhatsAppService extends EventEmitter {
       const connectionReplaced = code === DisconnectReason.connectionReplaced || code === 440;
       const badSession = code === DisconnectReason.badSession || code === 500;
 
-      // For connection replaced or bad session, clear auth state and require fresh QR
-      const shouldClearAuth = connectionReplaced || badSession;
-      const shouldReconnect = !loggedOut && !connectionReplaced && !badSession && 
-        (restartRequired || connectionLost || timedOut || serverTerminated || code === 0);
+      // ONLY clear auth for connection replaced (440) - preserve auth for Code 500 to allow retry
+      const shouldClearAuth = connectionReplaced;  // NOT badSession - Code 500 should preserve auth
+      
+      // Code 500 (Bad Session) SHOULD reconnect - preserve auth and retry
+      const shouldReconnect = !loggedOut && !connectionReplaced && 
+        (restartRequired || connectionLost || timedOut || serverTerminated || badSession || code === 0);
 
       if (code === 0 && s.reconnectAttempts >= 2) {
         console.log(
@@ -1046,30 +1048,22 @@ export class MultiUserWhatsAppService extends EventEmitter {
           console.error(`❌ Failed to delete session ${sessionId}:`, deleteError);
         }
       } else if (badSession || code === 500) {
-        // Code 500 - mark inactive but don't delete (allow retry)
-        console.log(`⚠️ MARKING INACTIVE: Session ${sessionId} due to Code 500 (Bad Session) - retry allowed`);
-        try {
-          await storage.updateUserWhatsAppSession(s.userId, {
-            isActive: false,
-            isAuthenticated: false,
-            updatedAt: new Date()
-          });
-          
-          await storage.createSystemLog({
-            level: 'warning',
-            message: `Session marked inactive due to Code 500 (retry allowed)`,
-            service: 'whatsapp',
-            userId: s.userId,
-            metadata: JSON.stringify({ 
-              sessionId, 
-              disconnectCode: code, 
-              reason: 'Bad Session - Retry Possible',
-              userName: s.userName
-            })
-          });
-        } catch (updateError) {
-          console.error(`❌ Failed to update session ${sessionId}:`, updateError);
-        }
+        // Code 500 - DO NOT mark inactive, allow automatic reconnection
+        console.log(`⚠️ Code 500 (Bad Session) detected for ${s.userName} - will attempt reconnection (auth preserved)`);
+        
+        await storage.createSystemLog({
+          level: 'warning',
+          message: `Code 500 (Bad Session) - reconnection will be attempted`,
+          service: 'whatsapp',
+          userId: s.userId,
+          metadata: JSON.stringify({ 
+            sessionId, 
+            disconnectCode: code, 
+            reason: 'Bad Session - Auto Reconnect',
+            userName: s.userName,
+            shouldReconnect: true
+          })
+        });
       }
 
       // Clear auth state for connection conflicts and corrupted sessions
@@ -1148,6 +1142,10 @@ export class MultiUserWhatsAppService extends EventEmitter {
           baseDelay = 500; // Just 500ms for instant pairing flow
           skipJitter = true; // No jitter for pairing
           console.log(`⚡ Fast reconnect for ${s.userName} - Code 515 after QR scan (pairing flow)`);
+        } else if (badSession || code === 500) {
+          // Code 500 (Bad Session) - reconnect with moderate delay
+          baseDelay = Math.min(10000 * Math.pow(1.5, s.reconnectAttempts), 180000); // 10s, 15s, 22s... up to 3m
+          console.log(`🔄 Code 500 reconnect for ${s.userName} - preserving auth, delay: ${Math.round(baseDelay/1000)}s`);
         } else if (code === 0) {
           baseDelay = Math.min(30000 * Math.pow(1.8, s.reconnectAttempts), 600000); // up to 10m
         } else if (restartRequired) {
