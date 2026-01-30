@@ -31,6 +31,7 @@ interface UserSession {
   reconnectTimeout?: NodeJS.Timeout;
   isPairing: boolean; // Track pairing state
   status: 'disconnected' | 'connecting' | 'connected' | 'pairing' | 'restarting';
+  userRequestedDisconnect?: boolean; // Track if disconnect was user-initiated
 }
 
 interface SessionStrategy {
@@ -990,6 +991,12 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
     // 3) CLOSE
     if (connection === 'close') {
+      // If this is a user-requested disconnect, skip auto-reconnect logic
+      if (s.userRequestedDisconnect) {
+        console.log(`🔌 Skipping auto-reconnect logic - user requested disconnect for ${s.userName}`);
+        return;
+      }
+
       s.isConnected = false;
       const wasPairing = s.isPairing; // Track if we were in pairing state
       s.isPairing = false;
@@ -1457,6 +1464,9 @@ export class MultiUserWhatsAppService extends EventEmitter {
       const sessionId = userSession.sessionId;
 
       console.log(`🔌 User requested disconnect for ${userName} (${clinicName})`);
+
+      // Set flag to prevent auto-reconnect logic
+      userSession.userRequestedDisconnect = true;
 
       // Clear reconnect timeout
       if (userSession.reconnectTimeout) {
