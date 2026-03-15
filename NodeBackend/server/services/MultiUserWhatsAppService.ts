@@ -4,7 +4,8 @@ import makeWASocket, {
   DisconnectReason,
   WASocket,
   AuthenticationState,
-  ConnectionState
+  ConnectionState,
+  downloadMediaMessage
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
@@ -1328,6 +1329,161 @@ export class MultiUserWhatsAppService extends EventEmitter {
         sessionId: userSession.sessionId
       }
     });
+
+    const messages = messageUpdate?.messages || [];
+    for (const msg of messages) {
+      try {
+        const payload = await this.buildIncomingWebhookPayload(userId, msg);
+        if (!payload) continue;
+        await this.forwardIncomingWebhook(payload);
+      } catch (error) {
+        console.error(`? Failed to forward incoming message for ${userSession.userName}:`, error);
+      }
+    }
+  }
+
+  private async buildIncomingWebhookPayload(userId: string, msg: any) {
+    if (!msg?.message || msg.key?.fromMe) return null;
+
+    const from = msg.key?.remoteJid as string | undefined;
+    if (!from || from.includes('status@broadcast')) return null;
+
+    const senderPn = (msg.key as any)?.senderPn as string | undefined;
+    const phoneNumber = String((senderPn || from.split('@')[0] || '').replace(/\D/g, ''));
+    if (!phoneNumber) return null;
+
+    const timestamp = typeof msg.messageTimestamp === 'number'
+      ? msg.messageTimestamp * 1000
+      : Date.now();
+
+    if (msg.message.interactiveResponseMessage) {
+      const res = msg.message.interactiveResponseMessage.nativeFlowResponseMessage;
+      let buttonId = '[Interactive Response]';
+      try {
+        buttonId = res?.paramsJson ? JSON.parse(res.paramsJson)?.id || buttonId : buttonId;
+      } catch {}
+
+      return {
+        userId,
+        sessionName: 'default',
+        phoneNumber,
+        content: String(buttonId),
+        from,
+        senderPn,
+        timestamp,
+        messageType: 'interactive',
+      };
+    }
+
+    if (msg.message.audioMessage) {
+      const audioMsg = msg.message.audioMessage;
+      const isVoiceNote = audioMsg.ptt === true;
+      let audioData: string | undefined;
+
+      try {
+        const audioBuffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+        audioData = audioBuffer.toString('base64');
+      } catch {}
+
+      return {
+        userId,
+        sessionName: 'default',
+        phoneNumber,
+        content: isVoiceNote ? '[Voice Note]' : '[Audio Message]',
+        from,
+        senderPn,
+        timestamp,
+        messageType: isVoiceNote ? 'voice_note' : 'audio',
+        mediaInfo: {
+          mimetype: audioMsg.mimetype || 'audio/ogg',
+          seconds: audioMsg.seconds,
+          fileLength: audioMsg.fileLength,
+        },
+        audioData,
+      };
+    }
+
+    if (msg.message.imageMessage) {
+      return {
+        userId,
+        sessionName: 'default',
+        phoneNumber,
+        content: msg.message.imageMessage.caption || '[Image]',
+        from,
+        senderPn,
+        timestamp,
+        messageType: 'image',
+      };
+    }
+
+    if (msg.message.documentMessage) {
+      return {
+        userId,
+        sessionName: 'default',
+        phoneNumber,
+        content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
+        from,
+        senderPn,
+        timestamp,
+        messageType: 'document',
+      };
+    }
+
+    if (msg.message.videoMessage) {
+      return {
+        userId,
+        sessionName: 'default',
+        phoneNumber,
+        content: msg.message.videoMessage.caption || '[Video]',
+        from,
+        senderPn,
+        timestamp,
+        messageType: 'video',
+      };
+    }
+
+    const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+    if (!messageText) return null;
+
+    return {
+      userId,
+      sessionName: 'default',
+      phoneNumber,
+      content: messageText,
+      from,
+      senderPn,
+      timestamp,
+      messageType: 'text',
+    };
+  }
+
+  private async forwardIncomingWebhook(payload: any) {
+    const webhookUrl =
+      process.env.INCOMING_MESSAGE_WEBHOOK_URL ||
+      process.env.CURRENT_APP_INCOMING_WEBHOOK_URL;
+
+    if (!webhookUrl) {
+      return;
+    }
+
+    const apiKey =
+      process.env.WHATSAPP_SYNC_API_KEY ||
+      process.env.API_KEY ||
+      'whatsapp-lims-secure-api-key-2024';
+
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      throw new Error(`Incoming webhook failed (${response.status}): ${responseText}`);
+    }
   }
 
   /**
@@ -1946,3 +2102,5 @@ export class MultiUserWhatsAppService extends EventEmitter {
 
 // Export singleton instance
 export const multiUserWhatsAppService = new MultiUserWhatsAppService();
+
+
