@@ -1,0 +1,43 @@
+name: voice-agent-service
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: your-github-user/voice-agent-service
+      branch: main
+      deploy_on_push: true
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8080"
+      - key: PUBLIC_BASE_URL
+        scope: RUN_TIME
+        value: ${APP_URL}
+      - key: PLATFORM_AGENT_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: PLATFORM_AGENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: STT_HTTP_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: STT_HTTP_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: TTS_HTTP_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: TTS_HTTP_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: TTS_VOICE_ID
+        scope: RUN_TIME
+      - key: TWILIO_AUTH_TOKEN
+        scope: RUN_TIME
+        type: SECRET
