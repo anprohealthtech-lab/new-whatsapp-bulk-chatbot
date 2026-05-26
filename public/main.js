@@ -93,11 +93,19 @@ async function start() {
       setStatus(message.status);
       addEntry("Status", formatStatus(message));
     }
+    if (message.type === "audio_chunk") {
+      setStatus(`Playing chunk ${message.index + 1}`);
+      playAgentAudio(message);
+    }
     if (message.type === "reply") {
       addEntry("You", message.transcript);
       addEntry("Agent", message.text);
-      setStatus("Playing reply");
-      playAgentAudio(message);
+      if (message.streaming) {
+        setStatus("Streaming complete");
+      } else {
+        setStatus("Playing reply");
+        playAgentAudio(message);
+      }
       resetControls("Idle");
     }
     if (message.type === "error") {

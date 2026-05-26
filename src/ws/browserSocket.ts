@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
 import { config } from "../config.js";
-import { processUtterance } from "../services/conversationPipeline.js";
+import { processUtterance, processUtteranceStreaming } from "../services/conversationPipeline.js";
 import type { VoiceContext } from "../types.js";
 
 interface BrowserClientMessage {
@@ -33,33 +33,94 @@ export function handleBrowserSocket(ws: WebSocket): void {
 
       sendStatus(ws, "Received audio", "receive", 0, `${audioBytes} bytes`);
 
-      const result = await processUtterance({
-        audioBase64: message.audioBase64,
-        encoding: "webm-opus",
-        sampleRate: 48000,
-        mimeType: message.mimeType || "audio/webm;codecs=opus",
-        context
-      }, (event) => {
-        const statusText = formatStageStatus(event.stage, event.status);
-        sendStatus(ws, statusText, event.stage, event.elapsedMs, event.detail);
-      });
+      if (config.ENABLE_STREAMING) {
+        let firstChunkSent = false;
+        const audioChunks: Array<{ audioBase64: string; mimeType: string }> = [];
 
-      if (!result) {
-        sendStatus(ws, "No speech detected", "stt", Date.now() - requestStartedAt);
-        return;
-      }
+        const result = await processUtteranceStreaming(
+          {
+            audioBase64: message.audioBase64,
+            encoding: "webm-opus",
+            sampleRate: 48000,
+            mimeType: message.mimeType || "audio/webm;codecs=opus",
+            context
+          },
+          {
+            onFirstAudio: (audio, sentence) => {
+              firstChunkSent = true;
+              sendStatus(ws, "TTS started", "tts", Date.now() - requestStartedAt, `first sentence`);
+              const audioBase64 = audio.audioBase64 || "";
+              const mimeType = audio.mimeType || "audio/mpeg";
+              ws.send(JSON.stringify({
+                type: "audio_chunk",
+                audioBase64,
+                mimeType,
+                sentence,
+                index: 0
+              }));
+              audioChunks.push({ audioBase64, mimeType });
+            },
+            onAudioChunk: (audio, sentence, index) => {
+              const audioBase64 = audio.audioBase64 || "";
+              const mimeType = audio.mimeType || "audio/mpeg";
+              ws.send(JSON.stringify({
+                type: "audio_chunk",
+                audioBase64,
+                mimeType,
+                sentence,
+                index
+              }));
+              audioChunks.push({ audioBase64, mimeType });
+            },
+            onStage: (event) => {
+              const statusText = formatStageStatus(event.stage, event.status);
+              sendStatus(ws, statusText, event.stage, event.elapsedMs, event.detail);
+            }
+          }
+        );
 
-      sendStatus(ws, "Sending reply", "reply", Date.now() - requestStartedAt);
-      ws.send(
-        JSON.stringify({
+        if (!result) {
+          sendStatus(ws, "No speech detected", "stt", Date.now() - requestStartedAt);
+          return;
+        }
+
+        sendStatus(ws, "Sending reply", "reply", Date.now() - requestStartedAt);
+        ws.send(JSON.stringify({
           type: "reply",
           transcript: result.transcript,
-          text: result.reply.text,
-          audioBase64: result.speech.audioBase64,
-          audioUrl: result.speech.audioUrl,
-          mimeType: result.speech.mimeType
-        })
-      );
+          text: result.fullReplyText,
+          streaming: true,
+          chunkCount: audioChunks.length
+        }));
+      } else {
+        const result = await processUtterance({
+          audioBase64: message.audioBase64,
+          encoding: "webm-opus",
+          sampleRate: 48000,
+          mimeType: message.mimeType || "audio/webm;codecs=opus",
+          context
+        }, (event) => {
+          const statusText = formatStageStatus(event.stage, event.status);
+          sendStatus(ws, statusText, event.stage, event.elapsedMs, event.detail);
+        });
+
+        if (!result) {
+          sendStatus(ws, "No speech detected", "stt", Date.now() - requestStartedAt);
+          return;
+        }
+
+        sendStatus(ws, "Sending reply", "reply", Date.now() - requestStartedAt);
+        ws.send(
+          JSON.stringify({
+            type: "reply",
+            transcript: result.transcript,
+            text: result.reply.text,
+            audioBase64: result.speech.audioBase64,
+            audioUrl: result.speech.audioUrl,
+            mimeType: result.speech.mimeType
+          })
+        );
+      }
       console.log(`[voice][browser] reply sent in ${Date.now() - requestStartedAt}ms session=${context.sessionId}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
