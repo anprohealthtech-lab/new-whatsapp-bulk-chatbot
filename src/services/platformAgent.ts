@@ -87,6 +87,18 @@ export async function askPlatformAgentStreaming(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let textBuffer = "";
+  let fullText = "";
+  const sentenceBoundary = /[.!?।]/;
+
+  const flushSentence = (isFinal: boolean) => {
+    const trimmed = textBuffer.trim();
+    if (trimmed) {
+      console.log(`[voice] Sentence detected (final=${isFinal}): "${trimmed.substring(0, 50)}..."`);
+      callbacks.onSentence(trimmed, isFinal);
+      textBuffer = "";
+    }
+  };
 
   try {
     while (true) {
@@ -103,10 +115,28 @@ export async function askPlatformAgentStreaming(
 
         try {
           const event = JSON.parse(data);
-          if (event.type === "sentence") {
+          if (event.type === "chunk" && event.text) {
+            textBuffer += event.text;
+            fullText += event.text;
+
+            // Check for sentence boundaries and emit sentences
+            let match;
+            while ((match = textBuffer.match(sentenceBoundary))) {
+              const idx = match.index! + 1;
+              const sentence = textBuffer.slice(0, idx).trim();
+              if (sentence) {
+                console.log(`[voice] Sentence detected: "${sentence.substring(0, 50)}..."`);
+                callbacks.onSentence(sentence, false);
+              }
+              textBuffer = textBuffer.slice(idx);
+            }
+          } else if (event.type === "sentence") {
+            // Legacy format support
             callbacks.onSentence(event.text, event.isFinal || false);
           } else if (event.type === "done") {
-            callbacks.onDone(event.fullText || "");
+            // Flush any remaining text as final sentence
+            flushSentence(true);
+            callbacks.onDone(fullText || event.fullText || "");
           } else if (event.type === "error") {
             callbacks.onError(new Error(event.message || "Unknown streaming error"));
           }
@@ -114,6 +144,12 @@ export async function askPlatformAgentStreaming(
           // Skip invalid JSON
         }
       }
+    }
+
+    // Handle remaining buffer after stream ends
+    flushSentence(true);
+    if (fullText && !buffer.includes('"type":"done"')) {
+      callbacks.onDone(fullText);
     }
   } catch (err) {
     callbacks.onError(err instanceof Error ? err : new Error(String(err)));
