@@ -21,18 +21,19 @@ const envSchema = z.object({
   TTS_VOICE_ID: z.string().default("default"),
   FISH_AUDIO_API_KEY: z.string().optional(),
   FISH_AUDIO_TTS_URL: z.string().url().default("https://api.fish.audio/v1/tts"),
-  FISH_AUDIO_MODEL: z.enum(["s1", "s2-pro"]).default("s2-pro"),
+  FISH_AUDIO_MODEL: z.enum(["s1", "s2", "s2-pro"]).default("s2"),
   FISH_AUDIO_REFERENCE_ID: z.string().optional(),
   FISH_AUDIO_FORMAT: z.enum(["mp3", "wav", "pcm", "opus"]).default("mp3"),
   FISH_AUDIO_SAMPLE_RATE: z.coerce.number().optional(),
   FISH_AUDIO_MP3_BITRATE: z.coerce.number().default(128),
-  FISH_AUDIO_LATENCY: z.enum(["normal", "balanced"]).default("normal"),
+  FISH_AUDIO_LATENCY: z.enum(["normal", "balanced", "lowest"]).default("balanced"),
   FISH_AUDIO_TEMPERATURE: z.coerce.number().default(0.7),
   FISH_AUDIO_TOP_P: z.coerce.number().default(0.7),
   FISH_AUDIO_SPEED: z.coerce.number().default(1),
   FISH_AUDIO_VOLUME: z.coerce.number().default(0),
   TWILIO_AUTH_TOKEN: z.string().optional(),
-  TWILIO_VALIDATE_SIGNATURE: z.coerce.boolean().default(false)
+  TWILIO_VALIDATE_SIGNATURE: z.coerce.boolean().default(false),
+  ENABLE_STREAMING: z.coerce.boolean().default(true)
 }).superRefine((env, ctx) => {
   if (env.STT_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
     ctx.addIssue({

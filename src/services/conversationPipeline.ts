@@ -1,4 +1,4 @@
-import { askPlatformAgent } from "./platformAgent.js";
+import { askPlatformAgent, askPlatformAgentStreaming } from "./platformAgent.js";
 import { transcribeSpeech } from "./stt.js";
 import { synthesizeSpeech } from "./tts.js";
 import type {
@@ -102,6 +102,164 @@ export async function processUtterance(
     console.error(`[voice] Pipeline failed after ${totalElapsedMs}ms: ${message}`);
     throw error;
   }
+}
+
+export interface StreamingPipelineCallbacks {
+  onFirstAudio?: (audio: TextToSpeechOutput, sentenceText: string) => void;
+  onAudioChunk?: (audio: TextToSpeechOutput, sentenceText: string, index: number) => void;
+  onStage?: (event: PipelineStageEvent) => void;
+}
+
+export interface StreamingPipelineResult {
+  transcript: string;
+  fullReplyText: string;
+  allAudio: TextToSpeechOutput[];
+  timeToFirstAudio: number;
+  totalTime: number;
+}
+
+export async function processUtteranceStreaming(
+  input: SpeechToTextInput,
+  callbacks: StreamingPipelineCallbacks
+): Promise<StreamingPipelineResult | null> {
+  const totalStartedAt = Date.now();
+  let timeToFirstAudio = 0;
+  const { onStage } = callbacks;
+
+  const sttStartedAt = Date.now();
+  emitStage(onStage, { stage: "stt", status: "started" });
+
+  const transcript = await transcribeSpeech(input);
+  const sttElapsedMs = Date.now() - sttStartedAt;
+  emitStage(onStage, {
+    stage: "stt",
+    status: "completed",
+    elapsedMs: sttElapsedMs,
+    detail: transcript ? `${transcript.length} chars` : "empty transcript"
+  });
+  console.log(`[voice] STT completed in ${sttElapsedMs}ms transcriptChars=${transcript.length}`);
+
+  if (!transcript) return null;
+
+  const agentStartedAt = Date.now();
+  emitStage(onStage, { stage: "agent", status: "started" });
+
+  const allAudio: TextToSpeechOutput[] = [];
+  let fullReplyText = "";
+  let sentenceIndex = 0;
+  let firstAudioSent = false;
+  let ttsStartedAt = 0;
+
+  const ttsQueue: Array<{ text: string; index: number }> = [];
+  let ttsProcessing = false;
+
+  const processTtsQueue = async () => {
+    if (ttsProcessing || ttsQueue.length === 0) return;
+    ttsProcessing = true;
+
+    while (ttsQueue.length > 0) {
+      const item = ttsQueue.shift()!;
+      try {
+        if (item.index === 0) {
+          ttsStartedAt = Date.now();
+          emitStage(onStage, { stage: "tts", status: "started" });
+        }
+
+        console.log(`[voice] TTS for sentence ${item.index}: "${item.text.substring(0, 50)}..."`);
+        const audio = await synthesizeSpeech({
+          text: item.text,
+          context: input.context
+        });
+        allAudio.push(audio);
+
+        if (!firstAudioSent) {
+          firstAudioSent = true;
+          timeToFirstAudio = Date.now() - totalStartedAt;
+          console.log(`[voice] First audio ready in ${timeToFirstAudio}ms`);
+          callbacks.onFirstAudio?.(audio, item.text);
+        } else {
+          callbacks.onAudioChunk?.(audio, item.text, item.index);
+        }
+      } catch (err) {
+        console.error(`[voice] TTS failed for sentence ${item.index}: ${err}`);
+      }
+    }
+
+    ttsProcessing = false;
+  };
+
+  return new Promise((resolve, reject) => {
+    askPlatformAgentStreaming(transcript, input.context, {
+      onSentence: (sentence, isFinal) => {
+        console.log(`[voice] Received sentence ${sentenceIndex} (final=${isFinal}): "${sentence.substring(0, 50)}..."`);
+        ttsQueue.push({ text: sentence, index: sentenceIndex });
+        sentenceIndex++;
+        processTtsQueue();
+      },
+      onDone: async (fullText) => {
+        fullReplyText = fullText;
+        const agentElapsedMs = Date.now() - agentStartedAt;
+        emitStage(onStage, {
+          stage: "agent",
+          status: "completed",
+          elapsedMs: agentElapsedMs,
+          detail: `${fullText.length} chars`
+        });
+        console.log(`[voice] Agent streaming completed in ${agentElapsedMs}ms`);
+
+        while (ttsQueue.length > 0 || ttsProcessing) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+
+        const ttsElapsedMs = ttsStartedAt ? Date.now() - ttsStartedAt : 0;
+        emitStage(onStage, {
+          stage: "tts",
+          status: "completed",
+          elapsedMs: ttsElapsedMs,
+          detail: `${allAudio.length} chunks`
+        });
+
+        const totalElapsedMs = Date.now() - totalStartedAt;
+        emitStage(onStage, { stage: "total", status: "completed", elapsedMs: totalElapsedMs });
+        console.log(`[voice] Streaming pipeline completed in ${totalElapsedMs}ms (first audio at ${timeToFirstAudio}ms)`);
+
+        resolve({
+          transcript,
+          fullReplyText,
+          allAudio,
+          timeToFirstAudio,
+          totalTime: totalElapsedMs
+        });
+      },
+      onError: (error) => {
+        console.error(`[voice] Agent streaming error: ${error.message}`);
+        emitStage(onStage, {
+          stage: "agent",
+          status: "failed",
+          elapsedMs: Date.now() - agentStartedAt,
+          detail: error.message
+        });
+        reject(error);
+      }
+    });
+  });
+}
+
+export function combineAudioOutputs(outputs: TextToSpeechOutput[]): TextToSpeechOutput | null {
+  if (outputs.length === 0) return null;
+  if (outputs.length === 1) return outputs[0];
+
+  const base64Parts = outputs
+    .filter(o => o.audioBase64)
+    .map(o => Buffer.from(o.audioBase64!, "base64"));
+
+  if (base64Parts.length === 0) return outputs[0];
+
+  const combined = Buffer.concat(base64Parts);
+  return {
+    audioBase64: combined.toString("base64"),
+    mimeType: outputs[0].mimeType
+  };
 }
 
 function emitStage(
