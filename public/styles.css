@@ -46,6 +46,35 @@ h1 {
   gap: 12px;
 }
 
+.tenant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tenant-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #42545a;
+}
+
+.tenant-grid input {
+  height: 40px;
+  border: 1px solid #c7d3d7;
+  border-radius: 6px;
+  padding: 0 10px;
+  font: inherit;
+  color: #172026;
+  background: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .tenant-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 button {
   height: 40px;
   min-width: 96px;

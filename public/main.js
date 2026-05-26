@@ -1,6 +1,8 @@
 const talkButton = document.getElementById("talkButton");
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
+const organizationIdInput = document.getElementById("organizationId");
+const userIdInput = document.getElementById("userId");
 
 let ws;
 let mediaRecorder;
@@ -69,7 +71,9 @@ async function start() {
       JSON.stringify({
         type: "audio",
         audioBase64,
-        sessionId
+        sessionId,
+        organizationId: organizationIdInput.value.trim() || "default_org",
+        userId: userIdInput.value.trim() || "default_user"
       })
     );
   };
