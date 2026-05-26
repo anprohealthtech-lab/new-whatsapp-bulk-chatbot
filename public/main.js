@@ -6,7 +6,14 @@ const userIdInput = document.getElementById("userId");
 
 let ws;
 let mediaRecorder;
+let audioChunks = [];
 let sessionId = crypto.randomUUID();
+
+const ORG_STORAGE_KEY = "voice_agent_organization_id";
+const USER_STORAGE_KEY = "voice_agent_user_id";
+
+organizationIdInput.value = localStorage.getItem(ORG_STORAGE_KEY) || "";
+userIdInput.value = localStorage.getItem(USER_STORAGE_KEY) || "";
 
 function addEntry(label, text) {
   const entry = document.createElement("p");
@@ -32,8 +39,21 @@ function blobToBase64(blob) {
 }
 
 async function start() {
+  const organizationId = organizationIdInput.value.trim();
+  const userId = userIdInput.value.trim();
+
+  if (!organizationId || !userId) {
+    addEntry("Error", "Enter a valid Organization ID and User ID before recording.");
+    setStatus("Missing tenant IDs");
+    return;
+  }
+
+  localStorage.setItem(ORG_STORAGE_KEY, organizationId);
+  localStorage.setItem(USER_STORAGE_KEY, userId);
+
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${protocol}://${location.host}/browser/media`);
+  audioChunks = [];
 
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -51,46 +71,85 @@ async function start() {
       } else if (message.audioUrl) {
         new Audio(message.audioUrl).play();
       }
-      setStatus("Listening");
+      resetControls("Idle");
     }
     if (message.type === "error") {
       addEntry("Error", message.error);
-      setStatus("Error");
+      resetControls("Error");
     }
   };
 
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mediaRecorder = new MediaRecorder(stream, {
-    mimeType: "audio/webm;codecs=opus"
-  });
+  const preferredMimeType = "audio/webm;codecs=opus";
+  const options = MediaRecorder.isTypeSupported(preferredMimeType)
+    ? { mimeType: preferredMimeType }
+    : undefined;
+  mediaRecorder = new MediaRecorder(stream, options);
 
-  mediaRecorder.ondataavailable = async (event) => {
-    if (!event.data.size || ws.readyState !== WebSocket.OPEN) return;
-    const audioBase64 = await blobToBase64(event.data);
-    ws.send(
-      JSON.stringify({
-        type: "audio",
-        audioBase64,
-        sessionId,
-        organizationId: organizationIdInput.value.trim() || "default_org",
-        userId: userIdInput.value.trim() || "default_user"
-      })
-    );
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size) audioChunks.push(event.data);
   };
 
-  mediaRecorder.start(3500);
-  talkButton.textContent = "Stop";
-  talkButton.classList.add("recording");
-  setStatus("Listening");
+  mediaRecorder.onstop = async () => {
+    try {
+      mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      const mimeType = mediaRecorder.mimeType || preferredMimeType;
+      const audioBlob = new Blob(audioChunks, { type: mimeType });
+      if (audioBlob.size < 1024) {
+        addEntry("Error", "Recording was too short. Please speak for a little longer.");
+        resetControls("Too short");
+        return;
+      }
+
+      const audioBase64 = await blobToBase64(audioBlob);
+      setStatus("Thinking");
+
+      ws.send(
+        JSON.stringify({
+          type: "audio",
+          audioBase64,
+          mimeType,
+          sessionId,
+          organizationId,
+          userId
+        })
+      );
+    } catch (error) {
+      addEntry("Error", error.message);
+      resetControls("Error");
+    }
+  };
+
+  ws.onopen = () => {
+    mediaRecorder.start();
+    talkButton.textContent = "Stop";
+    talkButton.disabled = false;
+    talkButton.classList.add("recording");
+    setStatus("Recording");
+  };
+
+  ws.onerror = () => {
+    addEntry("Error", "Voice socket connection failed.");
+    resetControls("Error");
+  };
 }
 
 function stop() {
-  mediaRecorder?.stop();
-  mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+  if (mediaRecorder?.state === "recording") {
+    talkButton.disabled = true;
+    setStatus("Preparing audio");
+    mediaRecorder.stop();
+  }
+}
+
+function resetControls(status) {
   ws?.close();
   talkButton.textContent = "Start";
+  talkButton.disabled = false;
   talkButton.classList.remove("recording");
-  setStatus("Idle");
+  setStatus(status);
 }
 
 talkButton.addEventListener("click", () => {
@@ -99,7 +158,7 @@ talkButton.addEventListener("click", () => {
   } else {
     start().catch((error) => {
       addEntry("Error", error.message);
-      setStatus("Error");
+      resetControls("Error");
     });
   }
 });

@@ -6,6 +6,7 @@ import type { VoiceContext } from "../types.js";
 interface BrowserClientMessage {
   type: "audio" | "stop";
   audioBase64?: string;
+  mimeType?: string;
   sessionId?: string;
   organizationId?: string;
   userId?: string;
@@ -30,7 +31,7 @@ export function handleBrowserSocket(ws: WebSocket): void {
         audioBase64: message.audioBase64,
         encoding: "webm-opus",
         sampleRate: 48000,
-        mimeType: "audio/webm;codecs=opus",
+        mimeType: message.mimeType || "audio/webm;codecs=opus",
         context
       });
 

@@ -67,6 +67,9 @@ async function transcribeWithOpenAI(input: SpeechToTextInput): Promise<string> {
 
 function buildOpenAIAudioFile(input: SpeechToTextInput): { blob: Blob; filename: string } {
   const audio = Buffer.from(input.audioBase64, "base64");
+  if (audio.length < 1024) {
+    throw new Error("Audio recording is too short to transcribe");
+  }
 
   if (input.encoding === "mulaw-8000") {
     const wav = wrapMulawAsWav(audio, input.sampleRate || 8000);
@@ -76,10 +79,19 @@ function buildOpenAIAudioFile(input: SpeechToTextInput): { blob: Blob; filename:
     };
   }
 
+  const mimeType = input.mimeType || "audio/webm";
   return {
-    blob: new Blob([toBlobPart(audio)], { type: input.mimeType || "audio/webm" }),
-    filename: "browser-audio.webm"
+    blob: new Blob([toBlobPart(audio)], { type: mimeType }),
+    filename: `browser-audio.${extensionForMimeType(mimeType)}`
   };
+}
+
+function extensionForMimeType(mimeType: string): string {
+  if (mimeType.includes("mp4")) return "m4a";
+  if (mimeType.includes("mpeg")) return "mp3";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("wav")) return "wav";
+  return "webm";
 }
 
 function toBlobPart(buffer: Buffer): Uint8Array<ArrayBuffer> {
