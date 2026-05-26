@@ -34,6 +34,13 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function formatStatus(message) {
+  const parts = [message.status];
+  if (typeof message.elapsedMs === "number") parts.push(`(${message.elapsedMs}ms)`);
+  if (message.detail) parts.push(`- ${message.detail}`);
+  return parts.join(" ");
+}
+
 function playAgentAudio(message) {
   const audio = message.audioBase64
     ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
@@ -84,10 +91,12 @@ async function start() {
     const message = JSON.parse(event.data);
     if (message.type === "status") {
       setStatus(message.status);
+      addEntry("Status", formatStatus(message));
     }
     if (message.type === "reply") {
       addEntry("You", message.transcript);
       addEntry("Agent", message.text);
+      setStatus("Playing reply");
       playAgentAudio(message);
       resetControls("Idle");
     }

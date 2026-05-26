@@ -14,6 +14,7 @@ interface BrowserClientMessage {
 
 export function handleBrowserSocket(ws: WebSocket): void {
   ws.on("message", async (raw) => {
+    const requestStartedAt = Date.now();
     try {
       const message = JSON.parse(raw.toString()) as BrowserClientMessage;
       if (message.type !== "audio" || !message.audioBase64) return;
@@ -25,7 +26,12 @@ export function handleBrowserSocket(ws: WebSocket): void {
         userId: message.userId || config.DEFAULT_USER_ID
       };
 
-      ws.send(JSON.stringify({ type: "status", status: "thinking" }));
+      const audioBytes = Math.floor((message.audioBase64.length * 3) / 4);
+      console.log(
+        `[voice][browser] received audio session=${context.sessionId} org=${context.organizationId} user=${context.userId} bytes=${audioBytes} mime=${message.mimeType || "unknown"}`
+      );
+
+      sendStatus(ws, "Received audio", "receive", 0, `${audioBytes} bytes`);
 
       const result = await processUtterance({
         audioBase64: message.audioBase64,
@@ -33,13 +39,17 @@ export function handleBrowserSocket(ws: WebSocket): void {
         sampleRate: 48000,
         mimeType: message.mimeType || "audio/webm;codecs=opus",
         context
+      }, (event) => {
+        const statusText = formatStageStatus(event.stage, event.status);
+        sendStatus(ws, statusText, event.stage, event.elapsedMs, event.detail);
       });
 
       if (!result) {
-        ws.send(JSON.stringify({ type: "status", status: "no_speech" }));
+        sendStatus(ws, "No speech detected", "stt", Date.now() - requestStartedAt);
         return;
       }
 
+      sendStatus(ws, "Sending reply", "reply", Date.now() - requestStartedAt);
       ws.send(
         JSON.stringify({
           type: "reply",
@@ -50,13 +60,40 @@ export function handleBrowserSocket(ws: WebSocket): void {
           mimeType: result.speech.mimeType
         })
       );
+      console.log(`[voice][browser] reply sent in ${Date.now() - requestStartedAt}ms session=${context.sessionId}`);
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error(`[voice][browser] request failed in ${Date.now() - requestStartedAt}ms: ${message}`);
       ws.send(
         JSON.stringify({
           type: "error",
-          error: error instanceof Error ? error.message : "Unknown error"
+          error: message
         })
       );
     }
   });
+}
+
+function sendStatus(
+  ws: WebSocket,
+  status: string,
+  stage: string,
+  elapsedMs?: number,
+  detail?: string
+): void {
+  ws.send(JSON.stringify({ type: "status", status, stage, elapsedMs, detail }));
+}
+
+function formatStageStatus(stage: string, status: string): string {
+  const label = stage === "stt"
+    ? "Transcription"
+    : stage === "agent"
+      ? "Agent"
+      : stage === "tts"
+        ? "TTS"
+        : "Total";
+
+  if (status === "started") return `${label} started`;
+  if (status === "completed") return `${label} completed`;
+  return `${label} failed`;
 }

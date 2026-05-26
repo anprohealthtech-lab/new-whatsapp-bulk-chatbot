@@ -5,6 +5,10 @@ export async function askPlatformAgent(
   text: string,
   context: VoiceContext
 ): Promise<AgentReply> {
+  console.log(
+    `[voice] Calling platform agent url=${config.PLATFORM_AGENT_URL} session=${context.sessionId} org=${context.organizationId} user=${context.userId} textChars=${text.length}`
+  );
+
   const response = await fetch(config.PLATFORM_AGENT_URL, {
     method: "POST",
     headers: {
@@ -23,6 +27,7 @@ export async function askPlatformAgent(
 
   if (!response.ok) {
     const body = await response.text();
+    console.error(`[voice] Platform agent failed status=${response.status} body=${body}`);
     throw new Error(`Platform agent failed: ${response.status} ${body}`);
   }
 
