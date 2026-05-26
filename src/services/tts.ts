@@ -85,7 +85,7 @@ async function synthesizeWithFishAudio(
       max_new_tokens: 1024,
       repetition_penalty: 1.2,
       min_chunk_length: 50,
-      condition_on_previous_chunks: true,
+      condition_on_previous_chunks: false,
       early_stop_threshold: 1
     })
   });

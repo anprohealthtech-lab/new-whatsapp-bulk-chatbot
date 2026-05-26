@@ -11,6 +11,9 @@ let analyser;
 let silenceMonitorId;
 let maxRecordingTimer;
 let audioChunks = [];
+let playbackQueue = [];
+let playbackActive = false;
+let playbackDoneStatus = null;
 let sessionId = crypto.randomUUID();
 
 const ORG_STORAGE_KEY = "voice_agent_organization_id";
@@ -41,7 +44,7 @@ function formatStatus(message) {
   return parts.join(" ");
 }
 
-function playAgentAudio(message) {
+function enqueueAgentAudio(message, onDone) {
   const audio = message.audioBase64
     ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
     : message.audioUrl
@@ -53,8 +56,40 @@ function playAgentAudio(message) {
     return;
   }
 
-  audio.play().catch((error) => {
+  playbackQueue.push({ audio, onDone });
+  playNextAudio();
+}
+
+function playNextAudio() {
+  if (playbackActive) return;
+
+  const item = playbackQueue.shift();
+  if (!item) {
+    if (playbackDoneStatus) {
+      const status = playbackDoneStatus;
+      playbackDoneStatus = null;
+      resetControls(status);
+    }
+    return;
+  }
+
+  playbackActive = true;
+  item.audio.onended = () => {
+    playbackActive = false;
+    item.onDone?.();
+    playNextAudio();
+  };
+  item.audio.onerror = () => {
+    playbackActive = false;
+    addEntry("Error", "Audio playback failed.");
+    item.onDone?.();
+    playNextAudio();
+  };
+  item.audio.play().catch((error) => {
+    playbackActive = false;
     addEntry("Error", `Audio playback failed: ${error.message}`);
+    item.onDone?.();
+    playNextAudio();
   });
 }
 
@@ -94,19 +129,23 @@ async function start() {
       addEntry("Status", formatStatus(message));
     }
     if (message.type === "audio_chunk") {
-      setStatus(`Playing chunk ${message.index + 1}`);
-      playAgentAudio(message);
+      setStatus(`Queued chunk ${message.index + 1}`);
+      enqueueAgentAudio(message);
     }
     if (message.type === "reply") {
       addEntry("You", message.transcript);
       addEntry("Agent", message.text);
       if (message.streaming) {
-        setStatus("Streaming complete");
+        setStatus("Finishing playback");
+        if (playbackActive || playbackQueue.length) {
+          playbackDoneStatus = "Idle";
+        } else {
+          resetControls("Idle");
+        }
       } else {
         setStatus("Playing reply");
-        playAgentAudio(message);
+        enqueueAgentAudio(message, () => resetControls("Idle"));
       }
-      resetControls("Idle");
     }
     if (message.type === "error") {
       addEntry("Error", message.error);
@@ -248,6 +287,9 @@ function resetControls(status) {
   cleanupAudio();
   ws?.close();
   mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+  playbackQueue = [];
+  playbackActive = false;
+  playbackDoneStatus = null;
   talkButton.textContent = "Start";
   talkButton.disabled = false;
   talkButton.classList.remove("recording");

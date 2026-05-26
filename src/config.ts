@@ -26,7 +26,7 @@ const envSchema = z.object({
   FISH_AUDIO_FORMAT: z.enum(["mp3", "wav", "pcm", "opus"]).default("mp3"),
   FISH_AUDIO_SAMPLE_RATE: z.coerce.number().optional(),
   FISH_AUDIO_MP3_BITRATE: z.coerce.number().default(128),
-  FISH_AUDIO_LATENCY: z.enum(["normal", "balanced", "lowest"]).default("balanced"),
+  FISH_AUDIO_LATENCY: z.enum(["normal", "balanced", "lowest"]).default("lowest"),
   FISH_AUDIO_TEMPERATURE: z.coerce.number().default(0.7),
   FISH_AUDIO_TOP_P: z.coerce.number().default(0.7),
   FISH_AUDIO_SPEED: z.coerce.number().default(1),

@@ -34,7 +34,6 @@ export function handleBrowserSocket(ws: WebSocket): void {
       sendStatus(ws, "Received audio", "receive", 0, `${audioBytes} bytes`);
 
       if (config.ENABLE_STREAMING) {
-        let firstChunkSent = false;
         const audioChunks: Array<{ audioBase64: string; mimeType: string }> = [];
 
         const result = await processUtteranceStreaming(
@@ -47,8 +46,7 @@ export function handleBrowserSocket(ws: WebSocket): void {
           },
           {
             onFirstAudio: (audio, sentence) => {
-              firstChunkSent = true;
-              sendStatus(ws, "TTS started", "tts", Date.now() - requestStartedAt, `first sentence`);
+              sendStatus(ws, "First audio ready", "tts", Date.now() - requestStartedAt, "first sentence");
               const audioBase64 = audio.audioBase64 || "";
               const mimeType = audio.mimeType || "audio/mpeg";
               ws.send(JSON.stringify({
