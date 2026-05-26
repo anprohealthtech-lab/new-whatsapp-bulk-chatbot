@@ -9,7 +9,7 @@ This service owns live audio transport and provider glue:
 - Twilio webhook at `/twilio/voice`
 - Twilio Media Streams WebSocket endpoint at `/twilio/media`
 - OpenAI STT provider, plus optional pluggable STT HTTP provider
-- Pluggable TTS HTTP provider
+- Fish Audio TTS provider, plus optional pluggable TTS HTTP provider
 - Platform connector that calls your existing app for the actual AI answer
 
 The main platform should remain the source of truth for users, tenants, agents, knowledge base, prompts, and conversation history.
@@ -84,6 +84,39 @@ For browser testing, the service sends `audio/webm;codecs=opus` to OpenAI. For T
 
 You only need this STT contract if `STT_PROVIDER=http`.
 
+## Text-To-Speech
+
+Recommended DigitalOcean env values for Fish Audio:
+
+```text
+TTS_PROVIDER=fish
+FISH_AUDIO_API_KEY=your-fish-audio-api-key
+FISH_AUDIO_TTS_URL=https://api.fish.audio/v1/tts
+FISH_AUDIO_MODEL=s2-pro
+FISH_AUDIO_REFERENCE_ID=your-cloned-voice-model-id
+FISH_AUDIO_FORMAT=mp3
+FISH_AUDIO_MP3_BITRATE=128
+FISH_AUDIO_LATENCY=normal
+FISH_AUDIO_TEMPERATURE=0.7
+FISH_AUDIO_TOP_P=0.7
+FISH_AUDIO_SPEED=1
+FISH_AUDIO_VOLUME=0
+```
+
+Fish Audio calls the cloned voice ID `reference_id`. If your model page is:
+
+```text
+https://fish.audio/m/802e3bc2b27e49c2995d23ef70e6ac89
+```
+
+then set:
+
+```text
+FISH_AUDIO_REFERENCE_ID=802e3bc2b27e49c2995d23ef70e6ac89
+```
+
+For simple browser testing, use `FISH_AUDIO_FORMAT=mp3`. Twilio phone-call playback still needs an 8kHz mu-law conversion step later.
+
 STT endpoint receives:
 
 ```json
@@ -101,6 +134,8 @@ STT endpoint returns:
 ```json
 { "text": "hello, I want to book a test" }
 ```
+
+You only need this TTS contract if `TTS_PROVIDER=http`.
 
 TTS endpoint receives:
 
