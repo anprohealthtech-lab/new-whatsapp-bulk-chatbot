@@ -4,6 +4,8 @@ import type { TextToSpeechInput, TextToSpeechOutput } from "../types.js";
 export async function synthesizeSpeech(
   input: TextToSpeechInput
 ): Promise<TextToSpeechOutput> {
+  console.log(`[voice] Synthesizing speech with provider=${config.TTS_PROVIDER}`);
+
   if (config.TTS_PROVIDER === "fish") {
     return synthesizeWithFishAudio(input);
   }
@@ -37,7 +39,14 @@ export async function synthesizeSpeech(
     throw new Error(`TTS failed: ${response.status} ${body}`);
   }
 
-  return (await response.json()) as TextToSpeechOutput;
+  const output = (await response.json()) as TextToSpeechOutput;
+  console.log(
+    `[voice] HTTP TTS returned audioBase64=${Boolean(output.audioBase64)} audioUrl=${Boolean(output.audioUrl)} twilioMulawBase64=${Boolean(output.twilioMulawBase64)}`
+  );
+  if (!output.audioBase64 && !output.audioUrl && !output.twilioMulawBase64) {
+    throw new Error("TTS provider returned no playable audio");
+  }
+  return output;
 }
 
 async function synthesizeWithFishAudio(
@@ -88,6 +97,10 @@ async function synthesizeWithFishAudio(
 
   const audioBuffer = Buffer.from(await response.arrayBuffer());
   const mimeType = getMimeType(config.FISH_AUDIO_FORMAT);
+  console.log(`[voice] Fish Audio returned ${audioBuffer.length} bytes as ${mimeType}`);
+  if (audioBuffer.length === 0) {
+    throw new Error("Fish Audio returned empty audio");
+  }
 
   return {
     audioBase64: audioBuffer.toString("base64"),

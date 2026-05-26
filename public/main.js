@@ -6,11 +6,19 @@ const userIdInput = document.getElementById("userId");
 
 let ws;
 let mediaRecorder;
+let audioContext;
+let analyser;
+let silenceMonitorId;
+let maxRecordingTimer;
 let audioChunks = [];
 let sessionId = crypto.randomUUID();
 
 const ORG_STORAGE_KEY = "voice_agent_organization_id";
 const USER_STORAGE_KEY = "voice_agent_user_id";
+const SILENCE_THRESHOLD = 0.018;
+const SILENCE_MS = 1200;
+const MIN_RECORDING_MS = 800;
+const MAX_RECORDING_MS = 15000;
 
 organizationIdInput.value = localStorage.getItem(ORG_STORAGE_KEY) || "";
 userIdInput.value = localStorage.getItem(USER_STORAGE_KEY) || "";
@@ -24,6 +32,23 @@ function addEntry(label, text) {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function playAgentAudio(message) {
+  const audio = message.audioBase64
+    ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
+    : message.audioUrl
+      ? new Audio(message.audioUrl)
+      : null;
+
+  if (!audio) {
+    addEntry("Error", "TTS returned no playable audio.");
+    return;
+  }
+
+  audio.play().catch((error) => {
+    addEntry("Error", `Audio playback failed: ${error.message}`);
+  });
 }
 
 function blobToBase64(blob) {
@@ -63,14 +88,7 @@ async function start() {
     if (message.type === "reply") {
       addEntry("You", message.transcript);
       addEntry("Agent", message.text);
-      if (message.audioBase64) {
-        const audio = new Audio(
-          `data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`
-        );
-        audio.play();
-      } else if (message.audioUrl) {
-        new Audio(message.audioUrl).play();
-      }
+      playAgentAudio(message);
       resetControls("Idle");
     }
     if (message.type === "error") {
@@ -80,6 +98,8 @@ async function start() {
   };
 
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  startSilenceMonitor(stream);
+
   const preferredMimeType = "audio/webm;codecs=opus";
   const options = MediaRecorder.isTypeSupported(preferredMimeType)
     ? { mimeType: preferredMimeType }
@@ -128,6 +148,11 @@ async function start() {
     talkButton.disabled = false;
     talkButton.classList.add("recording");
     setStatus("Recording");
+    maxRecordingTimer = window.setTimeout(() => {
+      if (mediaRecorder?.state === "recording") {
+        stop("Max recording reached");
+      }
+    }, MAX_RECORDING_MS);
   };
 
   ws.onerror = () => {
@@ -144,8 +169,68 @@ function stop() {
   }
 }
 
+function startSilenceMonitor(stream) {
+  audioContext = new AudioContext();
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 1024;
+
+  const source = audioContext.createMediaStreamSource(stream);
+  source.connect(analyser);
+
+  const samples = new Uint8Array(analyser.fftSize);
+  const startedAt = Date.now();
+  let hasSpeech = false;
+  let lastSpeechAt = startedAt;
+
+  const tick = () => {
+    if (!analyser || mediaRecorder?.state !== "recording") {
+      silenceMonitorId = window.requestAnimationFrame(tick);
+      return;
+    }
+
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (const sample of samples) {
+      const normalized = (sample - 128) / 128;
+      sum += normalized * normalized;
+    }
+
+    const rms = Math.sqrt(sum / samples.length);
+    const now = Date.now();
+    if (rms > SILENCE_THRESHOLD) {
+      hasSpeech = true;
+      lastSpeechAt = now;
+      setStatus("Recording");
+    } else if (hasSpeech && now - startedAt > MIN_RECORDING_MS && now - lastSpeechAt > SILENCE_MS) {
+      setStatus("Pause detected");
+      stop();
+      return;
+    }
+
+    silenceMonitorId = window.requestAnimationFrame(tick);
+  };
+
+  silenceMonitorId = window.requestAnimationFrame(tick);
+}
+
+function cleanupAudio() {
+  if (silenceMonitorId) {
+    window.cancelAnimationFrame(silenceMonitorId);
+    silenceMonitorId = undefined;
+  }
+  if (maxRecordingTimer) {
+    window.clearTimeout(maxRecordingTimer);
+    maxRecordingTimer = undefined;
+  }
+  audioContext?.close().catch(() => {});
+  audioContext = undefined;
+  analyser = undefined;
+}
+
 function resetControls(status) {
+  cleanupAudio();
   ws?.close();
+  mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
   talkButton.textContent = "Start";
   talkButton.disabled = false;
   talkButton.classList.remove("recording");
