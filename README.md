@@ -8,7 +8,7 @@ This service owns live audio transport and provider glue:
 - Browser WebSocket audio endpoint at `/browser/media`
 - Twilio webhook at `/twilio/voice`
 - Twilio Media Streams WebSocket endpoint at `/twilio/media`
-- Pluggable STT HTTP provider
+- OpenAI STT provider, plus optional pluggable STT HTTP provider
 - Pluggable TTS HTTP provider
 - Platform connector that calls your existing app for the actual AI answer
 
@@ -59,7 +59,30 @@ Response body:
 
 That endpoint should reuse your existing chatbot/RAG/knowledge-base logic and save transcript records if required.
 
+## Speech-To-Text
+
+Recommended DigitalOcean env values for OpenAI STT:
+
+```text
+STT_PROVIDER=openai
+OPENAI_API_KEY=sk-your-openai-api-key
+OPENAI_STT_MODEL=gpt-4o-mini-transcribe
+OPENAI_TRANSCRIPTIONS_URL=https://api.openai.com/v1/audio/transcriptions
+```
+
+Supported model values are controlled by OpenAI. Good starting choices:
+
+```text
+gpt-4o-mini-transcribe
+gpt-4o-transcribe
+whisper-1
+```
+
+For browser testing, the service sends `audio/webm;codecs=opus` to OpenAI. For Twilio testing, it wraps 8k mu-law frames in a WAV container before transcription.
+
 ## Provider Contracts
+
+You only need this STT contract if `STT_PROVIDER=http`.
 
 STT endpoint receives:
 

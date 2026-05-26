@@ -9,13 +9,33 @@ const envSchema = z.object({
   PLATFORM_AGENT_SECRET: z.string().min(1),
   DEFAULT_ORGANIZATION_ID: z.string().default("default_org"),
   DEFAULT_USER_ID: z.string().default("default_user"),
-  STT_HTTP_URL: z.string().url(),
+  STT_PROVIDER: z.enum(["openai", "http"]).default("http"),
+  STT_HTTP_URL: z.string().url().optional(),
   STT_HTTP_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_STT_MODEL: z.string().default("gpt-4o-mini-transcribe"),
+  OPENAI_TRANSCRIPTIONS_URL: z.string().url().default("https://api.openai.com/v1/audio/transcriptions"),
   TTS_HTTP_URL: z.string().url(),
   TTS_HTTP_API_KEY: z.string().optional(),
   TTS_VOICE_ID: z.string().default("default"),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_VALIDATE_SIGNATURE: z.coerce.boolean().default(false)
+}).superRefine((env, ctx) => {
+  if (env.STT_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["OPENAI_API_KEY"],
+      message: "OPENAI_API_KEY is required when STT_PROVIDER=openai"
+    });
+  }
+
+  if (env.STT_PROVIDER === "http" && !env.STT_HTTP_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["STT_HTTP_URL"],
+      message: "STT_HTTP_URL is required when STT_PROVIDER=http"
+    });
+  }
 });
 
 export const config = envSchema.parse(process.env);
