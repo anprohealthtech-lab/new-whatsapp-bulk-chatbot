@@ -70,14 +70,17 @@ export function handleBrowserSocket(ws: WebSocket): void {
 
       let audioBase64 = message.audioBase64;
       if (message.type === "audio_end") {
-        if (!bufferedAudioChunks.length) {
+        if (message.audioBase64) {
+          audioBase64 = message.audioBase64;
+        } else if (bufferedAudioChunks.length) {
+          const orderedChunks = bufferedAudioChunks
+            .sort((a, b) => a.sequence - b.sequence)
+            .map((chunk) => chunk.buffer);
+          audioBase64 = Buffer.concat(orderedChunks).toString("base64");
+        } else {
           sendStatus(ws, "No audio captured", "receive");
           return;
         }
-        const orderedChunks = bufferedAudioChunks
-          .sort((a, b) => a.sequence - b.sequence)
-          .map((chunk) => chunk.buffer);
-        audioBase64 = Buffer.concat(orderedChunks).toString("base64");
         bufferedAudioChunks.length = 0;
       }
 

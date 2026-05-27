@@ -14,6 +14,7 @@ let silenceMonitorId;
 let maxRecordingTimer;
 let audioChunks = [];
 let audioChunkSequence = 0;
+let pendingAudioChunkSends = [];
 let playbackQueue = [];
 let playbackActive = false;
 let playbackDoneStatus = null;
@@ -152,6 +153,7 @@ async function start() {
   ws = new WebSocket(`${protocol}://${location.host}/browser/media`);
   audioChunks = [];
   audioChunkSequence = 0;
+  pendingAudioChunkSends = [];
   const mode = modeInput.value;
 
   ws.onmessage = (event) => {
@@ -245,16 +247,18 @@ async function startRecording(organizationId, userId) {
     if (!event.data.size) return;
     audioChunks.push(event.data);
     const sequence = audioChunkSequence++;
-    const audioBase64 = await blobToBase64(event.data);
-    sendAudioMessage({
-      type: "audio_delta",
-      audioBase64,
-      sequence,
-      mimeType: currentMimeType,
-      sessionId,
-      organizationId,
-      userId
+    const sendPromise = blobToBase64(event.data).then((audioBase64) => {
+      sendAudioMessage({
+        type: "audio_delta",
+        audioBase64,
+        sequence,
+        mimeType: currentMimeType,
+        sessionId,
+        organizationId,
+        userId
+      });
     });
+    pendingAudioChunkSends.push(sendPromise);
   };
 
   mediaRecorder.onstop = async () => {
@@ -269,9 +273,12 @@ async function startRecording(organizationId, userId) {
         return;
       }
 
+      await Promise.allSettled(pendingAudioChunkSends);
+      const audioBase64 = await blobToBase64(audioBlob);
       setStatus("Thinking");
       sendAudioMessage({
         type: "audio_end",
+        audioBase64,
         mimeType: currentMimeType,
         sessionId,
         organizationId,
