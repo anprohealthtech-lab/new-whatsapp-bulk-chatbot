@@ -14,6 +14,7 @@ let audioChunks = [];
 let playbackQueue = [];
 let playbackActive = false;
 let playbackDoneStatus = null;
+let currentPlaybackAudio = null;
 let sessionId = crypto.randomUUID();
 
 const ORG_STORAGE_KEY = "voice_agent_organization_id";
@@ -45,6 +46,13 @@ function formatStatus(message) {
 }
 
 function enqueueAgentAudio(message, onDone) {
+  const hasBase64 = Boolean(message.audioBase64);
+  const hasUrl = Boolean(message.audioUrl);
+  addEntry(
+    "Audio",
+    `Queued chunk ${message.index ?? 0} (${message.mimeType || "unknown"}, base64=${hasBase64}, url=${hasUrl})`
+  );
+
   const audio = message.audioBase64
     ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
     : message.audioUrl
@@ -56,6 +64,8 @@ function enqueueAgentAudio(message, onDone) {
     return;
   }
 
+  audio.preload = "auto";
+  audio.volume = 1;
   playbackQueue.push({ audio, onDone });
   playNextAudio();
 }
@@ -74,19 +84,25 @@ function playNextAudio() {
   }
 
   playbackActive = true;
+  currentPlaybackAudio = item.audio;
   item.audio.onended = () => {
+    addEntry("Audio", "Chunk finished");
     playbackActive = false;
+    currentPlaybackAudio = null;
     item.onDone?.();
     playNextAudio();
   };
   item.audio.onerror = () => {
     playbackActive = false;
-    addEntry("Error", "Audio playback failed.");
+    currentPlaybackAudio = null;
+    addEntry("Error", `Audio playback failed. readyState=${item.audio.readyState} networkState=${item.audio.networkState}`);
     item.onDone?.();
     playNextAudio();
   };
+  addEntry("Audio", "Playing chunk");
   item.audio.play().catch((error) => {
     playbackActive = false;
+    currentPlaybackAudio = null;
     addEntry("Error", `Audio playback failed: ${error.message}`);
     item.onDone?.();
     playNextAudio();
@@ -106,6 +122,8 @@ function blobToBase64(blob) {
 }
 
 async function start() {
+  unlockAudioPlayback();
+
   const organizationId = organizationIdInput.value.trim();
   const userId = userIdInput.value.trim();
 
@@ -217,6 +235,14 @@ async function start() {
   };
 }
 
+function unlockAudioPlayback() {
+  const silentAudio = new Audio(
+    "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA=="
+  );
+  silentAudio.volume = 0;
+  silentAudio.play().catch(() => {});
+}
+
 function stop() {
   if (mediaRecorder?.state === "recording") {
     talkButton.disabled = true;
@@ -287,6 +313,8 @@ function resetControls(status) {
   cleanupAudio();
   ws?.close();
   mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+  currentPlaybackAudio?.pause();
+  currentPlaybackAudio = null;
   playbackQueue = [];
   playbackActive = false;
   playbackDoneStatus = null;

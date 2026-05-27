@@ -47,28 +47,32 @@ export function handleBrowserSocket(ws: WebSocket): void {
           {
             onFirstAudio: (audio, sentence) => {
               sendStatus(ws, "First audio ready", "tts", Date.now() - requestStartedAt, "first sentence");
-              const audioBase64 = audio.audioBase64 || "";
+              const audioBase64 = audio.audioBase64;
+              const audioUrl = audio.audioUrl;
               const mimeType = audio.mimeType || "audio/mpeg";
               ws.send(JSON.stringify({
                 type: "audio_chunk",
                 audioBase64,
+                audioUrl,
                 mimeType,
                 sentence,
                 index: 0
               }));
-              audioChunks.push({ audioBase64, mimeType });
+              audioChunks.push({ audioBase64: audioBase64 || "", mimeType });
             },
             onAudioChunk: (audio, sentence, index) => {
-              const audioBase64 = audio.audioBase64 || "";
+              const audioBase64 = audio.audioBase64;
+              const audioUrl = audio.audioUrl;
               const mimeType = audio.mimeType || "audio/mpeg";
               ws.send(JSON.stringify({
                 type: "audio_chunk",
                 audioBase64,
+                audioUrl,
                 mimeType,
                 sentence,
                 index
               }));
-              audioChunks.push({ audioBase64, mimeType });
+              audioChunks.push({ audioBase64: audioBase64 || "", mimeType });
             },
             onStage: (event) => {
               const statusText = formatStageStatus(event.stage, event.status);
