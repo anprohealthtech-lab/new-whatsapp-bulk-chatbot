@@ -3,6 +3,8 @@ const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const organizationIdInput = document.getElementById("organizationId");
 const userIdInput = document.getElementById("userId");
+const modeInput = document.getElementById("mode");
+const flowIdInput = document.getElementById("flowId");
 
 let ws;
 let mediaRecorder;
@@ -11,11 +13,13 @@ let analyser;
 let silenceMonitorId;
 let maxRecordingTimer;
 let audioChunks = [];
+let audioChunkSequence = 0;
 let playbackQueue = [];
 let playbackActive = false;
 let playbackDoneStatus = null;
 let currentPlaybackAudio = null;
 let sessionId = crypto.randomUUID();
+let currentMimeType = "audio/webm;codecs=opus";
 
 const ORG_STORAGE_KEY = "voice_agent_organization_id";
 const USER_STORAGE_KEY = "voice_agent_user_id";
@@ -67,6 +71,8 @@ function enqueueAgentAudio(message, onDone) {
   audio.preload = "auto";
   audio.volume = 1;
   playbackQueue.push({ audio, onDone });
+  talkButton.textContent = "Interrupt";
+  talkButton.disabled = false;
   playNextAudio();
 }
 
@@ -121,6 +127,12 @@ function blobToBase64(blob) {
   });
 }
 
+function sendAudioMessage(message) {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message));
+  }
+}
+
 async function start() {
   unlockAudioPlayback();
 
@@ -139,6 +151,8 @@ async function start() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${protocol}://${location.host}/browser/media`);
   audioChunks = [];
+  audioChunkSequence = 0;
+  const mode = modeInput.value;
 
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
@@ -149,6 +163,24 @@ async function start() {
     if (message.type === "audio_chunk") {
       setStatus(`Queued chunk ${message.index + 1}`);
       enqueueAgentAudio(message);
+    }
+    if (message.type === "flow_transcript") {
+      addEntry("You", message.transcript);
+    }
+    if (message.type === "flow_listen") {
+      addEntry("Status", "Flow is listening");
+      startRecording(organizationId, userId).catch((error) => {
+        addEntry("Error", error.message);
+        resetControls("Error");
+      });
+    }
+    if (message.type === "flow_end") {
+      addEntry("Status", "Flow ended");
+      if (playbackActive || playbackQueue.length) {
+        playbackDoneStatus = "Idle";
+      } else {
+        resetControls("Idle");
+      }
     }
     if (message.type === "reply") {
       addEntry("You", message.transcript);
@@ -171,17 +203,58 @@ async function start() {
     }
   };
 
+  ws.onopen = () => {
+    if (mode === "flow") {
+      talkButton.textContent = "Stop";
+      talkButton.disabled = false;
+      talkButton.classList.add("recording");
+      setStatus("Flow speaking");
+      sendAudioMessage({
+        type: "start_flow",
+        sessionId,
+        organizationId,
+        userId,
+        flowId: flowIdInput.value
+      });
+    } else {
+      startRecording(organizationId, userId).catch((error) => {
+        addEntry("Error", error.message);
+        resetControls("Error");
+      });
+    }
+  };
+
+  ws.onerror = () => {
+    addEntry("Error", "Voice socket connection failed.");
+    resetControls("Error");
+  };
+}
+
+async function startRecording(organizationId, userId) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   startSilenceMonitor(stream);
 
-  const preferredMimeType = "audio/webm;codecs=opus";
-  const options = MediaRecorder.isTypeSupported(preferredMimeType)
-    ? { mimeType: preferredMimeType }
+  currentMimeType = "audio/webm;codecs=opus";
+  const options = MediaRecorder.isTypeSupported(currentMimeType)
+    ? { mimeType: currentMimeType }
     : undefined;
   mediaRecorder = new MediaRecorder(stream, options);
+  currentMimeType = mediaRecorder.mimeType || currentMimeType;
 
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size) audioChunks.push(event.data);
+  mediaRecorder.ondataavailable = async (event) => {
+    if (!event.data.size) return;
+    audioChunks.push(event.data);
+    const sequence = audioChunkSequence++;
+    const audioBase64 = await blobToBase64(event.data);
+    sendAudioMessage({
+      type: "audio_delta",
+      audioBase64,
+      sequence,
+      mimeType: currentMimeType,
+      sessionId,
+      organizationId,
+      userId
+    });
   };
 
   mediaRecorder.onstop = async () => {
@@ -189,50 +262,37 @@ async function start() {
       mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
       if (ws.readyState !== WebSocket.OPEN) return;
 
-      const mimeType = mediaRecorder.mimeType || preferredMimeType;
-      const audioBlob = new Blob(audioChunks, { type: mimeType });
+      const audioBlob = new Blob(audioChunks, { type: currentMimeType });
       if (audioBlob.size < 1024) {
         addEntry("Error", "Recording was too short. Please speak for a little longer.");
         resetControls("Too short");
         return;
       }
 
-      const audioBase64 = await blobToBase64(audioBlob);
       setStatus("Thinking");
-
-      ws.send(
-        JSON.stringify({
-          type: "audio",
-          audioBase64,
-          mimeType,
-          sessionId,
-          organizationId,
-          userId
-        })
-      );
+      sendAudioMessage({
+        type: "audio_end",
+        mimeType: currentMimeType,
+        sessionId,
+        organizationId,
+        userId
+      });
     } catch (error) {
       addEntry("Error", error.message);
       resetControls("Error");
     }
   };
 
-  ws.onopen = () => {
-    mediaRecorder.start();
-    talkButton.textContent = "Stop";
-    talkButton.disabled = false;
-    talkButton.classList.add("recording");
-    setStatus("Recording");
-    maxRecordingTimer = window.setTimeout(() => {
-      if (mediaRecorder?.state === "recording") {
-        stop("Max recording reached");
-      }
-    }, MAX_RECORDING_MS);
-  };
-
-  ws.onerror = () => {
-    addEntry("Error", "Voice socket connection failed.");
-    resetControls("Error");
-  };
+  mediaRecorder.start(250);
+  talkButton.textContent = "Stop";
+  talkButton.disabled = false;
+  talkButton.classList.add("recording");
+  setStatus("Recording");
+  maxRecordingTimer = window.setTimeout(() => {
+    if (mediaRecorder?.state === "recording") {
+      stop("Max recording reached");
+    }
+  }, MAX_RECORDING_MS);
 }
 
 function unlockAudioPlayback() {
@@ -324,8 +384,19 @@ function resetControls(status) {
   setStatus(status);
 }
 
+async function interruptAndRestart() {
+  sendAudioMessage({ type: "barge_in", sessionId });
+  resetControls("Interrupted");
+  await start();
+}
+
 talkButton.addEventListener("click", () => {
-  if (mediaRecorder?.state === "recording") {
+  if (playbackActive || playbackQueue.length) {
+    interruptAndRestart().catch((error) => {
+      addEntry("Error", error.message);
+      resetControls("Error");
+    });
+  } else if (mediaRecorder?.state === "recording") {
     stop();
   } else {
     start().catch((error) => {

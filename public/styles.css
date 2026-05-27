@@ -59,7 +59,8 @@ h1 {
   color: #42545a;
 }
 
-.tenant-grid input {
+.tenant-grid input,
+.tenant-grid select {
   height: 40px;
   border: 1px solid #c7d3d7;
   border-radius: 6px;

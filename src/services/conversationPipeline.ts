@@ -286,6 +286,22 @@ function buildVoiceFiller(transcript: string): string {
   const normalized = transcript.trim().replace(/[?.!,]+$/g, "");
   const lower = normalized.toLowerCase();
 
+  if (/\b(appointment|book|schedule|slot|visit|consultation)\b/.test(lower)) {
+    return "Sure, I will check appointment options.";
+  }
+
+  if (/\b(report|reports|result|results|lab result|test result)\b/.test(lower)) {
+    return "Okay, I will look into the report details.";
+  }
+
+  if (/\b(price|pricing|cost|charge|charges|fee|fees|rate|rates)\b/.test(lower)) {
+    return "Sure, I will check the pricing.";
+  }
+
+  if (/\b(location|address|where|timing|time|hours|open|closed|available|availability)\b/.test(lower)) {
+    return "Okay, I will check availability and timing.";
+  }
+
   const aboutMatch = lower.match(/\b(?:symptoms of|causes of|treatment for|what is|what are)\s+(.{3,60})/);
   if (aboutMatch?.[1]) {
     return `Okay, let me check ${aboutMatch[1].trim()} for you.`;
