@@ -1,6 +1,7 @@
 import { askPlatformAgent, askPlatformAgentStreaming } from "./platformAgent.js";
 import { transcribeSpeech } from "./stt.js";
 import { synthesizeSpeech } from "./tts.js";
+import { config } from "../config.js";
 import type {
   AgentReply,
   SpeechToTextInput,
@@ -141,18 +142,50 @@ export async function processUtteranceStreaming(
 
   if (!transcript) return null;
 
-  const agentStartedAt = Date.now();
-  emitStage(onStage, { stage: "agent", status: "started" });
-
   const allAudio: TextToSpeechOutput[] = [];
   let fullReplyText = "";
   let sentenceIndex = 0;
   let firstAudioSent = false;
   let ttsStartedAt = 0;
+  let fillerAudioSent = false;
   let nextAudioToEmit = 0;
   let ttsInFlight = 0;
   const audioResults = new Map<number, { audio: TextToSpeechOutput; text: string }>();
   const ttsTasks: Promise<void>[] = [];
+
+  const sendAudio = (audio: TextToSpeechOutput, text: string, index: number): void => {
+    if (!firstAudioSent) {
+      firstAudioSent = true;
+      timeToFirstAudio = Date.now() - totalStartedAt;
+      console.log(`[voice] First audio ready in ${timeToFirstAudio}ms`);
+      callbacks.onFirstAudio?.(audio, text);
+      return;
+    }
+
+    callbacks.onAudioChunk?.(audio, text, index);
+  };
+
+  const fillerTask = config.ENABLE_VOICE_FILLER
+    ? (async () => {
+      const fillerText = buildVoiceFiller(transcript);
+      try {
+        console.log(`[voice] Filler TTS: "${fillerText}"`);
+        const audio = await synthesizeSpeech({
+          text: fillerText,
+          context: input.context
+        });
+        if (firstAudioSent) return;
+        fillerAudioSent = true;
+        sendAudio(audio, fillerText, -1);
+      } catch (err) {
+        console.error(`[voice] Filler TTS failed: ${err}`);
+      }
+    })()
+    : Promise.resolve();
+  void fillerTask;
+
+  const agentStartedAt = Date.now();
+  emitStage(onStage, { stage: "agent", status: "started" });
 
   const emitReadyAudio = () => {
     while (audioResults.has(nextAudioToEmit)) {
@@ -160,15 +193,7 @@ export async function processUtteranceStreaming(
       audioResults.delete(nextAudioToEmit);
       allAudio[nextAudioToEmit] = item.audio;
 
-      if (!firstAudioSent) {
-        firstAudioSent = true;
-        timeToFirstAudio = Date.now() - totalStartedAt;
-        console.log(`[voice] First audio ready in ${timeToFirstAudio}ms`);
-        callbacks.onFirstAudio?.(item.audio, item.text);
-      } else {
-        callbacks.onAudioChunk?.(item.audio, item.text, nextAudioToEmit);
-      }
-
+      sendAudio(item.audio, item.text, nextAudioToEmit);
       nextAudioToEmit++;
     }
   };
@@ -255,6 +280,18 @@ export async function processUtteranceStreaming(
       }
     });
   });
+}
+
+function buildVoiceFiller(transcript: string): string {
+  const normalized = transcript.trim().replace(/[?.!,]+$/g, "");
+  const lower = normalized.toLowerCase();
+
+  const aboutMatch = lower.match(/\b(?:symptoms of|causes of|treatment for|what is|what are)\s+(.{3,60})/);
+  if (aboutMatch?.[1]) {
+    return `Okay, let me check ${aboutMatch[1].trim()} for you.`;
+  }
+
+  return "Okay, let me check that for you.";
 }
 
 export function combineAudioOutputs(outputs: TextToSpeechOutput[]): TextToSpeechOutput | null {

@@ -36,7 +36,8 @@ const envSchema = z.object({
   FISH_AUDIO_VOLUME: z.coerce.number().default(0),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_VALIDATE_SIGNATURE: z.coerce.boolean().default(false),
-  ENABLE_STREAMING: z.coerce.boolean().default(true)
+  ENABLE_STREAMING: z.coerce.boolean().default(true),
+  ENABLE_VOICE_FILLER: z.coerce.boolean().default(true)
 }).superRefine((env, ctx) => {
   if (env.STT_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
     ctx.addIssue({
