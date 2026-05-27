@@ -89,15 +89,35 @@ export async function askPlatformAgentStreaming(
   let buffer = "";
   let textBuffer = "";
   let fullText = "";
-  const sentenceBoundary = /[.!?।]/;
+  const hardBoundary = /[.!?।]/;
+  const softBoundary = /[,;:]/;
+  const minPhraseChars = 35;
+  const maxPhraseChars = 90;
 
-  const flushSentence = (isFinal: boolean) => {
+  const flushPhrase = (isFinal: boolean) => {
     const trimmed = textBuffer.trim();
     if (trimmed) {
-      console.log(`[voice] Sentence detected (final=${isFinal}): "${trimmed.substring(0, 50)}..."`);
+      console.log(`[voice] Phrase detected (final=${isFinal}): "${trimmed.substring(0, 50)}..."`);
       callbacks.onSentence(trimmed, isFinal);
       textBuffer = "";
     }
+  };
+
+  const findPhraseBoundary = (): number | null => {
+    const hard = textBuffer.search(hardBoundary);
+    if (hard >= 0) return hard + 1;
+
+    if (textBuffer.length >= minPhraseChars) {
+      const soft = textBuffer.search(softBoundary);
+      if (soft >= minPhraseChars) return soft + 1;
+    }
+
+    if (textBuffer.length >= maxPhraseChars) {
+      const splitAt = textBuffer.lastIndexOf(" ", maxPhraseChars);
+      return splitAt > minPhraseChars ? splitAt : maxPhraseChars;
+    }
+
+    return null;
   };
 
   try {
@@ -119,23 +139,22 @@ export async function askPlatformAgentStreaming(
             textBuffer += event.text;
             fullText += event.text;
 
-            // Check for sentence boundaries and emit sentences
-            let match;
-            while ((match = textBuffer.match(sentenceBoundary))) {
-              const idx = match.index! + 1;
-              const sentence = textBuffer.slice(0, idx).trim();
-              if (sentence) {
-                console.log(`[voice] Sentence detected: "${sentence.substring(0, 50)}..."`);
-                callbacks.onSentence(sentence, false);
+            let boundaryIndex = findPhraseBoundary();
+            while (boundaryIndex !== null) {
+              const phrase = textBuffer.slice(0, boundaryIndex).trim();
+              if (phrase) {
+                console.log(`[voice] Phrase detected: "${phrase.substring(0, 50)}..."`);
+                callbacks.onSentence(phrase, false);
               }
-              textBuffer = textBuffer.slice(idx);
+              textBuffer = textBuffer.slice(boundaryIndex);
+              boundaryIndex = findPhraseBoundary();
             }
           } else if (event.type === "sentence") {
             // Legacy format support
             callbacks.onSentence(event.text, event.isFinal || false);
           } else if (event.type === "done") {
             // Flush any remaining text as final sentence
-            flushSentence(true);
+            flushPhrase(true);
             callbacks.onDone(fullText || event.fullText || "");
           } else if (event.type === "error") {
             callbacks.onError(new Error(event.message || "Unknown streaming error"));
@@ -147,7 +166,7 @@ export async function askPlatformAgentStreaming(
     }
 
     // Handle remaining buffer after stream ends
-    flushSentence(true);
+    flushPhrase(true);
     if (fullText && !buffer.includes('"type":"done"')) {
       callbacks.onDone(fullText);
     }

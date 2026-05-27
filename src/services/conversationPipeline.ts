@@ -149,52 +149,62 @@ export async function processUtteranceStreaming(
   let sentenceIndex = 0;
   let firstAudioSent = false;
   let ttsStartedAt = 0;
+  let nextAudioToEmit = 0;
+  let ttsInFlight = 0;
+  const audioResults = new Map<number, { audio: TextToSpeechOutput; text: string }>();
+  const ttsTasks: Promise<void>[] = [];
 
-  const ttsQueue: Array<{ text: string; index: number }> = [];
-  let ttsProcessing = false;
+  const emitReadyAudio = () => {
+    while (audioResults.has(nextAudioToEmit)) {
+      const item = audioResults.get(nextAudioToEmit)!;
+      audioResults.delete(nextAudioToEmit);
+      allAudio[nextAudioToEmit] = item.audio;
 
-  const processTtsQueue = async () => {
-    if (ttsProcessing || ttsQueue.length === 0) return;
-    ttsProcessing = true;
-
-    while (ttsQueue.length > 0) {
-      const item = ttsQueue.shift()!;
-      try {
-        if (item.index === 0) {
-          ttsStartedAt = Date.now();
-          emitStage(onStage, { stage: "tts", status: "started" });
-        }
-
-        console.log(`[voice] TTS for sentence ${item.index}: "${item.text.substring(0, 50)}..."`);
-        const audio = await synthesizeSpeech({
-          text: item.text,
-          context: input.context
-        });
-        allAudio.push(audio);
-
-        if (!firstAudioSent) {
-          firstAudioSent = true;
-          timeToFirstAudio = Date.now() - totalStartedAt;
-          console.log(`[voice] First audio ready in ${timeToFirstAudio}ms`);
-          callbacks.onFirstAudio?.(audio, item.text);
-        } else {
-          callbacks.onAudioChunk?.(audio, item.text, item.index);
-        }
-      } catch (err) {
-        console.error(`[voice] TTS failed for sentence ${item.index}: ${err}`);
+      if (!firstAudioSent) {
+        firstAudioSent = true;
+        timeToFirstAudio = Date.now() - totalStartedAt;
+        console.log(`[voice] First audio ready in ${timeToFirstAudio}ms`);
+        callbacks.onFirstAudio?.(item.audio, item.text);
+      } else {
+        callbacks.onAudioChunk?.(item.audio, item.text, nextAudioToEmit);
       }
+
+      nextAudioToEmit++;
+    }
+  };
+
+  const startTts = (text: string, index: number) => {
+    if (index === 0) {
+      ttsStartedAt = Date.now();
+      emitStage(onStage, { stage: "tts", status: "started" });
     }
 
-    ttsProcessing = false;
+    ttsInFlight++;
+    const task = (async () => {
+      try {
+        console.log(`[voice] TTS for phrase ${index}: "${text.substring(0, 50)}..."`);
+        const audio = await synthesizeSpeech({
+          text,
+          context: input.context
+        });
+        audioResults.set(index, { audio, text });
+        emitReadyAudio();
+      } catch (err) {
+        console.error(`[voice] TTS failed for phrase ${index}: ${err}`);
+      } finally {
+        ttsInFlight--;
+      }
+    })();
+
+    ttsTasks.push(task);
   };
 
   return new Promise((resolve, reject) => {
     askPlatformAgentStreaming(transcript, input.context, {
       onSentence: (sentence, isFinal) => {
-        console.log(`[voice] Received sentence ${sentenceIndex} (final=${isFinal}): "${sentence.substring(0, 50)}..."`);
-        ttsQueue.push({ text: sentence, index: sentenceIndex });
+        console.log(`[voice] Received phrase ${sentenceIndex} (final=${isFinal}): "${sentence.substring(0, 50)}..."`);
+        startTts(sentence, sentenceIndex);
         sentenceIndex++;
-        processTtsQueue();
       },
       onDone: async (fullText) => {
         fullReplyText = fullText;
@@ -207,9 +217,11 @@ export async function processUtteranceStreaming(
         });
         console.log(`[voice] Agent streaming completed in ${agentElapsedMs}ms`);
 
-        while (ttsQueue.length > 0 || ttsProcessing) {
+        while (ttsInFlight > 0) {
           await new Promise(r => setTimeout(r, 50));
         }
+        await Promise.allSettled(ttsTasks);
+        emitReadyAudio();
 
         const ttsElapsedMs = ttsStartedAt ? Date.now() - ttsStartedAt : 0;
         emitStage(onStage, {
