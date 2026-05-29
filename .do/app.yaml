@@ -24,6 +24,21 @@ services:
       - key: PLATFORM_AGENT_SECRET
         scope: RUN_TIME
         type: SECRET
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: SUPABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: VOICE_AUDIO_BUCKET
+        scope: RUN_TIME
+        value: voice-flow-audio
+      - key: VOICE_CACHE_ADMIN_TOKEN
+        scope: RUN_TIME
+        type: SECRET
       - key: STT_HTTP_URL
         scope: RUN_TIME
         type: SECRET

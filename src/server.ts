@@ -5,8 +5,10 @@ import { WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { healthRouter } from "./routes/health.js";
 import { twilioRouter } from "./routes/twilio.js";
+import { voiceFlowCacheRouter } from "./routes/voiceFlowCache.js";
 import { handleBrowserSocket } from "./ws/browserSocket.js";
 import { handleTwilioMediaSocket } from "./ws/twilioMediaSocket.js";
+import { runMigrations } from "./migrate.js";
 
 const app = express();
 
@@ -16,6 +18,7 @@ app.use(express.json({ limit: "15mb" }));
 app.use(express.static("public"));
 app.use(healthRouter);
 app.use(twilioRouter);
+app.use(voiceFlowCacheRouter);
 
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -37,6 +40,8 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
-server.listen(config.PORT, () => {
-  console.log(`Voice agent service listening on ${config.PORT}`);
+runMigrations().finally(() => {
+  server.listen(config.PORT, () => {
+    console.log(`Voice agent service listening on ${config.PORT}`);
+  });
 });

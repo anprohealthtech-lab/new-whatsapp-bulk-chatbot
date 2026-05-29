@@ -117,6 +117,22 @@ FISH_AUDIO_REFERENCE_ID=802e3bc2b27e49c2995d23ef70e6ac89
 
 For simple browser testing, use `FISH_AUDIO_FORMAT=mp3`. Twilio phone-call playback still needs an 8kHz mu-law conversion step later.
 
+## Pre-generated Flow Audio Cache
+
+For campaign-style flows, the service can pre-generate fixed TTS chunks once, upload the audio to Supabase Storage, and reuse the saved URL during normal flow playback.
+
+Required env values:
+
+```text
+DATABASE_URL=postgres://...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+VOICE_AUDIO_BUCKET=voice-flow-audio
+VOICE_CACHE_ADMIN_TOKEN=optional-admin-token
+```
+
+Open the browser test console, enter the tenant IDs, choose the flow, then use **Generate** in the Flow Audio Cache panel. Runtime flow playback automatically uses cached audio URLs when the row exists.
+
 STT endpoint receives:
 
 ```json

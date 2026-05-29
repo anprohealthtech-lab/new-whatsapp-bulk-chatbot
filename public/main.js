@@ -5,6 +5,11 @@ const organizationIdInput = document.getElementById("organizationId");
 const userIdInput = document.getElementById("userId");
 const modeInput = document.getElementById("mode");
 const flowIdInput = document.getElementById("flowId");
+const cacheTokenInput = document.getElementById("cacheToken");
+const generateCacheButton = document.getElementById("generateCacheButton");
+const refreshCacheButton = document.getElementById("refreshCacheButton");
+const cacheStatusEl = document.getElementById("cacheStatus");
+const chunkListEl = document.getElementById("chunkList");
 
 let ws;
 let mediaRecorder;
@@ -19,18 +24,22 @@ let playbackQueue = [];
 let playbackActive = false;
 let playbackDoneStatus = null;
 let currentPlaybackAudio = null;
+let pendingFlowListen = null;
 let sessionId = crypto.randomUUID();
 let currentMimeType = "audio/webm;codecs=opus";
 
 const ORG_STORAGE_KEY = "voice_agent_organization_id";
 const USER_STORAGE_KEY = "voice_agent_user_id";
+const CACHE_TOKEN_STORAGE_KEY = "voice_agent_cache_token";
 const SILENCE_THRESHOLD = 0.018;
 const SILENCE_MS = 1200;
 const MIN_RECORDING_MS = 800;
 const MAX_RECORDING_MS = 15000;
+const FLOW_LISTEN_ARM_DELAY_MS = 350;
 
 organizationIdInput.value = localStorage.getItem(ORG_STORAGE_KEY) || "";
 userIdInput.value = localStorage.getItem(USER_STORAGE_KEY) || "";
+cacheTokenInput.value = localStorage.getItem(CACHE_TOKEN_STORAGE_KEY) || "";
 
 function addEntry(label, text) {
   const entry = document.createElement("p");
@@ -41,6 +50,10 @@ function addEntry(label, text) {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setCacheStatus(text) {
+  cacheStatusEl.textContent = text;
 }
 
 function formatStatus(message) {
@@ -82,6 +95,19 @@ function playNextAudio() {
 
   const item = playbackQueue.shift();
   if (!item) {
+    if (pendingFlowListen) {
+      const nextListen = pendingFlowListen;
+      pendingFlowListen = null;
+      setStatus("Listening soon");
+      window.setTimeout(() => {
+        startRecording(nextListen.organizationId, nextListen.userId).catch((error) => {
+          addEntry("Error", error.message);
+          resetControls("Error");
+        });
+      }, FLOW_LISTEN_ARM_DELAY_MS);
+      return;
+    }
+
     if (playbackDoneStatus) {
       const status = playbackDoneStatus;
       playbackDoneStatus = null;
@@ -134,6 +160,105 @@ function sendAudioMessage(message) {
   }
 }
 
+function startFlowListeningAfterPlayback(organizationId, userId) {
+  pendingFlowListen = { organizationId, userId };
+  if (playbackActive || playbackQueue.length) {
+    setStatus("Waiting for audio to finish");
+    return;
+  }
+
+  playNextAudio();
+}
+
+function getTenantInput() {
+  const organizationId = organizationIdInput.value.trim();
+  const userId = userIdInput.value.trim();
+  if (!organizationId || !userId) {
+    throw new Error("Enter Organization ID and User ID first.");
+  }
+
+  localStorage.setItem(ORG_STORAGE_KEY, organizationId);
+  localStorage.setItem(USER_STORAGE_KEY, userId);
+  localStorage.setItem(CACHE_TOKEN_STORAGE_KEY, cacheTokenInput.value.trim());
+  return { organizationId, userId, flowId: flowIdInput.value };
+}
+
+function cacheHeaders() {
+  const token = cacheTokenInput.value.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function refreshCacheChunks() {
+  const params = getTenantInput();
+  setCacheStatus("Loading");
+  const query = new URLSearchParams(params);
+  const response = await fetch(`/api/voice-flow-audio?${query}`, {
+    headers: cacheHeaders()
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Failed to load cached chunks.");
+
+  renderChunks(data.chunks || []);
+  setCacheStatus(`${data.chunks?.length || 0} chunks`);
+}
+
+async function generateCacheChunks() {
+  const body = getTenantInput();
+  setCacheStatus("Generating");
+  generateCacheButton.disabled = true;
+  refreshCacheButton.disabled = true;
+  try {
+    const response = await fetch("/api/voice-flow-audio/generate", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...cacheHeaders()
+      },
+      body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Failed to generate chunks.");
+
+    const createdCount = (data.generated || []).filter((chunk) => !chunk.cached).length;
+    const cachedCount = (data.generated || []).filter((chunk) => chunk.cached).length;
+    addEntry("Cache", `Generated ${createdCount}, reused ${cachedCount}.`);
+    await refreshCacheChunks();
+  } finally {
+    generateCacheButton.disabled = false;
+    refreshCacheButton.disabled = false;
+  }
+}
+
+function renderChunks(chunks) {
+  chunkListEl.innerHTML = "";
+  if (!chunks.length) {
+    chunkListEl.textContent = "No cached chunks yet.";
+    return;
+  }
+
+  for (const chunk of chunks) {
+    const row = document.createElement("div");
+    row.className = "chunk-row";
+    const details = document.createElement("div");
+    details.innerHTML = `<strong>${chunk.node_id} #${chunk.chunk_index}</strong><span>${chunk.text}</span>`;
+
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "icon-button";
+    play.textContent = "Play";
+    play.addEventListener("click", () => {
+      enqueueAgentAudio({
+        index: chunk.chunk_index,
+        audioUrl: chunk.audio_url,
+        mimeType: chunk.mime_type
+      });
+    });
+
+    row.append(details, play);
+    chunkListEl.append(row);
+  }
+}
+
 async function start() {
   unlockAudioPlayback();
 
@@ -171,10 +296,7 @@ async function start() {
     }
     if (message.type === "flow_listen") {
       addEntry("Status", "Flow is listening");
-      startRecording(organizationId, userId).catch((error) => {
-        addEntry("Error", error.message);
-        resetControls("Error");
-      });
+      startFlowListeningAfterPlayback(organizationId, userId);
     }
     if (message.type === "flow_end") {
       addEntry("Status", "Flow ended");
@@ -233,6 +355,11 @@ async function start() {
 }
 
 async function startRecording(organizationId, userId) {
+  cleanupAudio();
+  audioChunks = [];
+  pendingAudioChunkSends = [];
+  audioChunkSequence = 0;
+
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   startSilenceMonitor(stream);
 
@@ -284,6 +411,9 @@ async function startRecording(organizationId, userId) {
         organizationId,
         userId
       });
+      audioChunks = [];
+      pendingAudioChunkSends = [];
+      audioChunkSequence = 0;
     } catch (error) {
       addEntry("Error", error.message);
       resetControls("Error");
@@ -385,6 +515,7 @@ function resetControls(status) {
   playbackQueue = [];
   playbackActive = false;
   playbackDoneStatus = null;
+  pendingFlowListen = null;
   talkButton.textContent = "Start";
   talkButton.disabled = false;
   talkButton.classList.remove("recording");
@@ -411,4 +542,18 @@ talkButton.addEventListener("click", () => {
       resetControls("Error");
     });
   }
+});
+
+generateCacheButton.addEventListener("click", () => {
+  generateCacheChunks().catch((error) => {
+    addEntry("Error", error.message);
+    setCacheStatus("Error");
+  });
+});
+
+refreshCacheButton.addEventListener("click", () => {
+  refreshCacheChunks().catch((error) => {
+    addEntry("Error", error.message);
+    setCacheStatus("Error");
+  });
 });

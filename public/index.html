@@ -43,6 +43,23 @@
           <span id="status">Idle</span>
         </div>
 
+        <section class="cache-panel" aria-label="Pre-generated flow audio">
+          <div>
+            <p class="eyebrow">Flow Audio Cache</p>
+            <h2>Pre-generated chunks</h2>
+          </div>
+          <label>
+            <span>Admin token</span>
+            <input id="cacheToken" type="password" placeholder="Only needed if configured" />
+          </label>
+          <div class="controls">
+            <button id="generateCacheButton" type="button">Generate</button>
+            <button id="refreshCacheButton" type="button" class="secondary">Refresh</button>
+            <span id="cacheStatus">Not checked</span>
+          </div>
+          <div class="chunk-list" id="chunkList"></div>
+        </section>
+
         <div class="log" id="log"></div>
       </section>
     </main>

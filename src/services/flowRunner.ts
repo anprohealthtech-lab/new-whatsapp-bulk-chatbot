@@ -1,33 +1,34 @@
 import { synthesizeSpeech } from "./tts.js";
+import { getOrCreateFlowAudioChunk, isVoiceCacheConfigured } from "./voiceFlowAudioCache.js";
 import type { TextToSpeechOutput, VoiceContext } from "../types.js";
 
 type FlowIntent = "yes" | "no" | "stop" | "repeat" | "question" | "unclear";
 type FlowNodeType = "speak" | "listen" | "end";
 
-interface BaseFlowNode {
+export interface BaseFlowNode {
   id: string;
   type: FlowNodeType;
 }
 
-interface SpeakFlowNode extends BaseFlowNode {
+export interface SpeakFlowNode extends BaseFlowNode {
   type: "speak";
   text: string;
   next?: string;
 }
 
-interface ListenFlowNode extends BaseFlowNode {
+export interface ListenFlowNode extends BaseFlowNode {
   type: "listen";
   prompt: string;
   intents: Partial<Record<FlowIntent, string>>;
 }
 
-interface EndFlowNode extends BaseFlowNode {
+export interface EndFlowNode extends BaseFlowNode {
   type: "end";
 }
 
-type FlowNode = SpeakFlowNode | ListenFlowNode | EndFlowNode;
+export type FlowNode = SpeakFlowNode | ListenFlowNode | EndFlowNode;
 
-interface VoiceFlow {
+export interface VoiceFlow {
   id: string;
   startNode: string;
   nodes: Record<string, FlowNode>;
@@ -49,7 +50,7 @@ export interface FlowRunnerCallbacks {
   onStatus?: (status: string, detail?: string) => void;
 }
 
-const sampleFlows: Record<string, VoiceFlow> = {
+export const sampleFlows: Record<string, VoiceFlow> = {
   health_camp_reminder: {
     id: "health_camp_reminder",
     startNode: "greeting",
@@ -167,13 +168,13 @@ export class FlowRunner {
 
       if (node.type === "listen") {
         this.lastListenNodeId = node.id;
-        await this.speak(node.prompt, context, callbacks);
+      await this.speak(node.prompt, node.id, context, callbacks);
         callbacks.onStatus?.("Flow listening", node.id);
         return { status: "listening", currentNodeId: node.id };
       }
 
       callbacks.onStatus?.("Flow speaking", node.id);
-      await this.speak(node.text, context, callbacks);
+      await this.speak(node.text, node.id, context, callbacks);
       if (!node.next) return { status: "ended" };
       this.currentNodeId = node.next;
     }
@@ -181,14 +182,30 @@ export class FlowRunner {
 
   private async speak(
     text: string,
+    nodeId: string,
     context: VoiceContext,
     callbacks: FlowRunnerCallbacks
   ): Promise<void> {
     const phrases = splitIntoVoicePhrases(text);
-    const chunks = await Promise.all(phrases.map(async (phrase) => ({
-      text: phrase,
-      audio: await synthesizeSpeech({ text: phrase, context })
-    })));
+    const chunks = await Promise.all(phrases.map(async (phrase, chunkIndex) => {
+      if (isVoiceCacheConfigured()) {
+        return getOrCreateFlowAudioChunk({
+          organizationId: context.organizationId,
+          userId: context.userId,
+          flowId: this.flow.id,
+          nodeId,
+          chunkIndex,
+          text: phrase
+        }, context);
+      }
+
+      return {
+        text: phrase,
+        index: chunkIndex,
+        cached: false,
+        audio: await synthesizeSpeech({ text: phrase, context })
+      };
+    }));
 
     for (const chunk of chunks) {
       callbacks.onAudio({
@@ -206,6 +223,17 @@ export class FlowRunner {
   }
 }
 
+export function getVoiceFlow(flowId: string): VoiceFlow | undefined {
+  return sampleFlows[flowId];
+}
+
+export function listVoiceFlows(): Array<{ id: string; nodeCount: number }> {
+  return Object.values(sampleFlows).map((flow) => ({
+    id: flow.id,
+    nodeCount: Object.keys(flow.nodes).length
+  }));
+}
+
 function classifyFlowIntent(text: string): FlowIntent {
   const lower = text.toLowerCase();
 
@@ -218,7 +246,7 @@ function classifyFlowIntent(text: string): FlowIntent {
   return "unclear";
 }
 
-function splitIntoVoicePhrases(text: string): string[] {
+export function splitIntoVoicePhrases(text: string): string[] {
   const parts = text
     .split(/(?<=[.!?।])\s+/)
     .flatMap((part) => part.length > 90 ? part.split(/,\s+/) : [part])
