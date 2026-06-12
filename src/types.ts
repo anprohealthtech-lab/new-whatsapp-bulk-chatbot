@@ -1,4 +1,4 @@
-export type AudioEncoding = "webm-opus" | "mulaw-8000";
+export type AudioEncoding = "webm-opus" | "mulaw-8000" | "wav";
 
 export interface VoiceContext {
   channel: "browser" | "twilio";
@@ -13,6 +13,8 @@ export interface VoiceContext {
   campaignId?: string;
   contactId?: string;
   gatewayId?: string;
+  preferredAudioFormat?: "pcm";
+  preferredSampleRate?: number;
 }
 
 export interface AgentReply {

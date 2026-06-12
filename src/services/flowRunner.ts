@@ -1,6 +1,7 @@
 import { synthesizeSpeech } from "./tts.js";
 import { getOrCreateFlowAudioChunk, isVoiceCacheConfigured } from "./voiceFlowAudioCache.js";
 import { getPublishedVoiceFlow } from "./flowRepository.js";
+import { askPlatformAgent } from "./platformAgent.js";
 import type { TextToSpeechOutput, VoiceContext } from "../types.js";
 
 type FlowIntent = "yes" | "no" | "stop" | "repeat" | "question" | "unclear";
@@ -89,6 +90,14 @@ export class FlowRunner {
     callbacks.onStatus?.("Flow intent", `${intent}: ${text}`);
     const nextNodeId = listenNode.intents[intent] || listenNode.intents.unclear;
     if (!nextNodeId) return { status: "ended" };
+
+    if (nextNodeId === listenNode.id && intent !== "stop") {
+      callbacks.onStatus?.("Agent thinking");
+      const reply = await askPlatformAgent(text, context);
+      await this.speak(reply.text, `${listenNode.id}_agent`, context, callbacks);
+      callbacks.onStatus?.("Flow listening", listenNode.id);
+      return { status: "listening", currentNodeId: listenNode.id };
+    }
 
     this.currentNodeId = nextNodeId;
     return this.runFromCurrentNode(context, callbacks);

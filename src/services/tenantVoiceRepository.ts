@@ -181,6 +181,10 @@ export async function getRuntimeVoiceAgent(context: VoiceContext): Promise<Runti
       : Promise.resolve(undefined)
   ]);
 
+  console.log(
+    `[voice] runtime agent=${agent.id} stt=${sttCredential?.provider || "fallback"} ` +
+    `tts=${voiceProfile?.provider || "fallback"} profile=${voiceProfile?.id || "fallback"}`
+  );
   return { id: agent.id, sttCredential, voiceProfile };
 }
 

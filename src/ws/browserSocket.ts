@@ -11,6 +11,7 @@ interface BrowserClientMessage {
   audioBase64?: string;
   sequence?: number;
   mimeType?: string;
+  sampleRate?: number;
   sessionId?: string;
   organizationId?: string;
   userId?: string;
@@ -21,7 +22,7 @@ interface BrowserClientMessage {
   sessionToken?: string;
 }
 
-export function handleBrowserSocket(ws: WebSocket): void {
+export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
   const bufferedAudioChunks: Array<{ sequence: number; buffer: Buffer }> = [];
   let bufferedContext: VoiceContext | null = null;
   let bufferedMimeType = "audio/webm;codecs=opus";
@@ -52,7 +53,8 @@ export function handleBrowserSocket(ws: WebSocket): void {
         voiceAgentId: claims.voiceAgentId,
         flowId: claims.flowId,
         flowVersion: claims.flowVersion,
-        voiceProfileId: claims.voiceProfileId
+        voiceProfileId: claims.voiceProfileId,
+        ...(isGateway ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 } : {})
       } : {
         channel: "browser",
         sessionId: message.sessionId || crypto.randomUUID(),
@@ -61,7 +63,8 @@ export function handleBrowserSocket(ws: WebSocket): void {
         voiceAgentId: message.voiceAgentId,
         flowId: message.flowId,
         flowVersion: message.flowVersion,
-        voiceProfileId: message.voiceProfileId
+        voiceProfileId: message.voiceProfileId,
+        ...(isGateway ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 } : {})
       };
       bufferedContext = context;
       bufferedMimeType = message.mimeType || bufferedMimeType;
@@ -69,6 +72,10 @@ export function handleBrowserSocket(ws: WebSocket): void {
       if (message.type === "start_flow") {
         const flowId = context.flowId || message.flowId;
         if (!flowId) throw new Error("flowId is required to start a tenant voice flow");
+        console.log(
+          `[voice][${isGateway ? "gateway" : "browser"}] starting flow session=${context.sessionId} ` +
+          `org=${context.organizationId} user=${context.userId} agent=${context.voiceAgentId} flow=${flowId} version=${context.flowVersion || "latest"}`
+        );
         flowRunner = await FlowRunner.create(context, flowId);
         flowWaitingForInput = false;
         sendStatus(ws, "Flow started", "flow", undefined, flowId);
@@ -127,11 +134,12 @@ export function handleBrowserSocket(ws: WebSocket): void {
         sendStatus(ws, "Flow transcribing", "flow");
         const transcript = await transcribeSpeech({
           audioBase64,
-          encoding: "webm-opus",
-          sampleRate: 48000,
+          encoding: effectiveMimeType.includes("wav") ? "wav" : "webm-opus",
+          sampleRate: message.sampleRate || 48000,
           mimeType: effectiveMimeType,
           context: effectiveContext
         });
+        console.log(`[voice][gateway] transcript session=${effectiveContext.sessionId} chars=${transcript.length}`);
         ws.send(JSON.stringify({ type: "flow_transcript", transcript }));
         const result = await flowRunner.handleUserText(transcript, effectiveContext, flowCallbacks(ws));
         flowWaitingForInput = result.status === "listening";

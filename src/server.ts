@@ -33,7 +33,7 @@ server.on("upgrade", (request, socket, head) => {
 
   wss.handleUpgrade(request, socket, head, (ws) => {
     if (url.pathname === "/browser/media" || url.pathname === "/gateway/media") {
-      handleBrowserSocket(ws);
+      handleBrowserSocket(ws, url.pathname === "/gateway/media");
       return;
     }
     handleTwilioMediaSocket(ws);
@@ -43,5 +43,9 @@ server.on("upgrade", (request, socket, head) => {
 runMigrations().finally(() => {
   server.listen(config.PORT, () => {
     console.log(`Voice agent service listening on ${config.PORT}`);
+    console.log(
+      `[voice] startup database=${Boolean(config.DATABASE_URL)} sttFallback=${config.STT_PROVIDER} ` +
+      `ttsFallback=${config.TTS_PROVIDER} gatewayOutput=pcm/16000 streaming=${config.ENABLE_STREAMING}`
+    );
   });
 });

@@ -64,12 +64,14 @@ async function synthesizeWithFishAudio(
   const referenceId = profile?.referenceId || config.FISH_AUDIO_REFERENCE_ID;
   const apiUrl = stringSetting(profile?.credential.settings, "url") || config.FISH_AUDIO_TTS_URL;
   const model = profile?.model || config.FISH_AUDIO_MODEL;
-  const format = profile?.format || config.FISH_AUDIO_FORMAT;
+  const format = input.context.preferredAudioFormat || profile?.format || config.FISH_AUDIO_FORMAT;
   const temperature = numberSetting(profile?.settings, "temperature", config.FISH_AUDIO_TEMPERATURE);
   const topP = numberSetting(profile?.settings, "topP", config.FISH_AUDIO_TOP_P);
   const speed = numberSetting(profile?.settings, "speed", config.FISH_AUDIO_SPEED);
   const volume = numberSetting(profile?.settings, "volume", config.FISH_AUDIO_VOLUME);
-  const sampleRate = optionalNumberSetting(profile?.settings, "sampleRate") || config.FISH_AUDIO_SAMPLE_RATE;
+  const sampleRate = input.context.preferredSampleRate ||
+    optionalNumberSetting(profile?.settings, "sampleRate") ||
+    config.FISH_AUDIO_SAMPLE_RATE;
   const bitrate = numberSetting(profile?.settings, "mp3Bitrate", config.FISH_AUDIO_MP3_BITRATE);
   const latency = stringSetting(profile?.settings, "latency") || config.FISH_AUDIO_LATENCY;
 
