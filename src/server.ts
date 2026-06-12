@@ -26,13 +26,13 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url || "/", "http://localhost");
 
-  if (url.pathname !== "/browser/media" && url.pathname !== "/twilio/media") {
+  if (url.pathname !== "/browser/media" && url.pathname !== "/gateway/media" && url.pathname !== "/twilio/media") {
     socket.destroy();
     return;
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    if (url.pathname === "/browser/media") {
+    if (url.pathname === "/browser/media" || url.pathname === "/gateway/media") {
       handleBrowserSocket(ws);
       return;
     }

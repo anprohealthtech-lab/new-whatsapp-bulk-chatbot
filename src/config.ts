@@ -7,11 +7,13 @@ const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().optional(),
   PLATFORM_AGENT_URL: z.string().url(),
   PLATFORM_AGENT_SECRET: z.string().min(1),
+  VOICE_SESSION_TOKEN_SECRET: z.string().optional(),
   DATABASE_URL: z.string().optional(),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   VOICE_AUDIO_BUCKET: z.string().default("voice-flow-audio"),
   VOICE_CACHE_ADMIN_TOKEN: z.string().optional(),
+  VOICE_CREDENTIAL_ENCRYPTION_KEY: z.string().optional(),
   DEFAULT_ORGANIZATION_ID: z.string().default("default_org"),
   DEFAULT_USER_ID: z.string().default("default_user"),
   STT_PROVIDER: z.enum(["openai", "http"]).default("http"),
@@ -44,7 +46,7 @@ const envSchema = z.object({
   ENABLE_STREAMING: z.coerce.boolean().default(true),
   ENABLE_VOICE_FILLER: z.coerce.boolean().default(true)
 }).superRefine((env, ctx) => {
-  if (env.STT_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
+  if (!env.DATABASE_URL && env.STT_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["OPENAI_API_KEY"],
@@ -52,7 +54,7 @@ const envSchema = z.object({
     });
   }
 
-  if (env.STT_PROVIDER === "http" && !env.STT_HTTP_URL) {
+  if (!env.DATABASE_URL && env.STT_PROVIDER === "http" && !env.STT_HTTP_URL) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["STT_HTTP_URL"],
@@ -60,7 +62,7 @@ const envSchema = z.object({
     });
   }
 
-  if (env.TTS_PROVIDER === "fish" && !env.FISH_AUDIO_API_KEY) {
+  if (!env.DATABASE_URL && env.TTS_PROVIDER === "fish" && !env.FISH_AUDIO_API_KEY) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["FISH_AUDIO_API_KEY"],
@@ -68,7 +70,7 @@ const envSchema = z.object({
     });
   }
 
-  if (env.TTS_PROVIDER === "fish" && !env.FISH_AUDIO_REFERENCE_ID) {
+  if (!env.DATABASE_URL && env.TTS_PROVIDER === "fish" && !env.FISH_AUDIO_REFERENCE_ID) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["FISH_AUDIO_REFERENCE_ID"],
@@ -76,7 +78,7 @@ const envSchema = z.object({
     });
   }
 
-  if (env.TTS_PROVIDER === "http" && !env.TTS_HTTP_URL) {
+  if (!env.DATABASE_URL && env.TTS_PROVIDER === "http" && !env.TTS_HTTP_URL) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["TTS_HTTP_URL"],

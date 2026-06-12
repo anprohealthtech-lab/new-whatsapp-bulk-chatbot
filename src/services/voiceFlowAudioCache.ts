@@ -8,6 +8,8 @@ export interface VoiceFlowCacheKey {
   organizationId: string;
   userId: string;
   flowId: string;
+  flowVersion: number;
+  voiceProfileId?: string;
   nodeId: string;
   chunkIndex: number;
   text: string;
@@ -26,6 +28,8 @@ interface VoiceFlowChunkRow {
   organization_id: string;
   user_id: string;
   flow_id: string;
+  flow_version: number;
+  voice_profile_id: string | null;
   node_id: string;
   chunk_index: number;
   text: string;
@@ -126,11 +130,13 @@ async function findCachedChunk(key: VoiceFlowCacheKey): Promise<VoiceFlowChunkRo
     WHERE organization_id = ${key.organizationId}
       AND user_id = ${key.userId}
       AND flow_id = ${key.flowId}
+      AND flow_version = ${key.flowVersion}
+      AND COALESCE(voice_profile_id, '') = ${key.voiceProfileId || ""}
       AND node_id = ${key.nodeId}
       AND chunk_index = ${key.chunkIndex}
       AND text_hash = ${hashText(key.text)}
-      AND voice_provider = ${config.TTS_PROVIDER}
-      AND COALESCE(voice_id, '') = ${getVoiceId()}
+      AND voice_provider = ${getVoiceProvider(key)}
+      AND COALESCE(voice_id, '') = ${getVoiceId(key)}
     LIMIT 1
   `;
   return rows[0] || null;
@@ -153,7 +159,7 @@ async function saveCachedChunk(
         mime_type = ${mimeType},
         byte_size = ${byteSize},
         metadata = ${JSON.stringify({
-          ttsProvider: config.TTS_PROVIDER,
+          ttsProvider: getVoiceProvider(key),
           fishModel: config.FISH_AUDIO_MODEL,
           fishFormat: config.FISH_AUDIO_FORMAT
         })},
@@ -169,6 +175,8 @@ async function saveCachedChunk(
       organization_id,
       user_id,
       flow_id,
+      flow_version,
+      voice_profile_id,
       node_id,
       chunk_index,
       text,
@@ -185,18 +193,20 @@ async function saveCachedChunk(
       ${key.organizationId},
       ${key.userId},
       ${key.flowId},
+      ${key.flowVersion},
+      ${key.voiceProfileId || null},
       ${key.nodeId},
       ${key.chunkIndex},
       ${key.text},
       ${hashText(key.text)},
-      ${config.TTS_PROVIDER},
-      ${getVoiceId() || null},
+      ${getVoiceProvider(key)},
+      ${getVoiceId(key) || null},
       ${audioPath},
       ${audioUrl},
       ${mimeType},
       ${byteSize},
       ${JSON.stringify({
-        ttsProvider: config.TTS_PROVIDER,
+        ttsProvider: getVoiceProvider(key),
         fishModel: config.FISH_AUDIO_MODEL,
         fishFormat: config.FISH_AUDIO_FORMAT
       })},
@@ -273,12 +283,19 @@ function buildAudioPath(key: VoiceFlowCacheKey, mimeType: string): string {
     safePath(key.organizationId),
     safePath(key.userId),
     safePath(key.flowId),
-    safePath(getVoiceId() || config.TTS_PROVIDER),
+    `v${key.flowVersion}`,
+    safePath(key.voiceProfileId || "default"),
+    safePath(getVoiceId(key) || getVoiceProvider(key)),
     `${safePath(key.nodeId)}-${key.chunkIndex}-${hashText(key.text).slice(0, 16)}.${extension}`
   ].join("/");
 }
 
-function getVoiceId(): string {
+function getVoiceProvider(key: VoiceFlowCacheKey): string {
+  return key.voiceProfileId ? "tenant" : config.TTS_PROVIDER;
+}
+
+function getVoiceId(key: VoiceFlowCacheKey): string {
+  if (key.voiceProfileId) return key.voiceProfileId;
   return config.TTS_PROVIDER === "fish"
     ? config.FISH_AUDIO_REFERENCE_ID || config.FISH_AUDIO_MODEL
     : config.TTS_VOICE_ID;

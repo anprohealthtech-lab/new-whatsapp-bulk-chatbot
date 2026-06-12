@@ -1,5 +1,6 @@
 import { synthesizeSpeech } from "./tts.js";
 import { getOrCreateFlowAudioChunk, isVoiceCacheConfigured } from "./voiceFlowAudioCache.js";
+import { getPublishedVoiceFlow } from "./flowRepository.js";
 import type { TextToSpeechOutput, VoiceContext } from "../types.js";
 
 type FlowIntent = "yes" | "no" | "stop" | "repeat" | "question" | "unclear";
@@ -50,85 +51,24 @@ export interface FlowRunnerCallbacks {
   onStatus?: (status: string, detail?: string) => void;
 }
 
-export const sampleFlows: Record<string, VoiceFlow> = {
-  health_camp_reminder: {
-    id: "health_camp_reminder",
-    startNode: "greeting",
-    nodes: {
-      greeting: {
-        id: "greeting",
-        type: "speak",
-        text: "Hi, this is ANPRO. I am calling about your health camp registration.",
-        next: "camp_info"
-      },
-      camp_info: {
-        id: "camp_info",
-        type: "speak",
-        text: "The camp is on 24th at 10 AM.",
-        next: "confirm"
-      },
-      confirm: {
-        id: "confirm",
-        type: "listen",
-        prompt: "Would you like me to confirm your appointment?",
-        intents: {
-          yes: "confirmed",
-          no: "not_confirmed",
-          stop: "stop",
-          repeat: "camp_info",
-          question: "answer_question",
-          unclear: "clarify"
-        }
-      },
-      confirmed: {
-        id: "confirmed",
-        type: "speak",
-        text: "Great, your appointment is confirmed for 24th at 10 AM. Thank you.",
-        next: "end"
-      },
-      not_confirmed: {
-        id: "not_confirmed",
-        type: "speak",
-        text: "No problem. We will not confirm it now. Thank you.",
-        next: "end"
-      },
-      answer_question: {
-        id: "answer_question",
-        type: "speak",
-        text: "The health camp is scheduled on 24th at 10 AM. Our team can help with registration and basic health checks.",
-        next: "confirm"
-      },
-      clarify: {
-        id: "clarify",
-        type: "speak",
-        text: "Sorry, I did not catch that.",
-        next: "confirm"
-      },
-      stop: {
-        id: "stop",
-        type: "speak",
-        text: "Okay, I will stop here. Thank you.",
-        next: "end"
-      },
-      end: {
-        id: "end",
-        type: "end"
-      }
-    }
-  }
-};
-
 export class FlowRunner {
   private flow: VoiceFlow;
+  private flowVersion: number;
+  private voiceProfileId?: string;
   private currentNodeId: string;
   private audioIndex = 0;
   private lastListenNodeId: string | null = null;
 
-  constructor(flowId = "health_camp_reminder") {
-    const flow = sampleFlows[flowId];
-    if (!flow) throw new Error(`Unknown voice flow: ${flowId}`);
+  private constructor(flow: VoiceFlow, flowVersion: number, voiceProfileId?: string) {
     this.flow = flow;
+    this.flowVersion = flowVersion;
+    this.voiceProfileId = voiceProfileId;
     this.currentNodeId = flow.startNode;
+  }
+
+  static async create(context: VoiceContext, flowId: string): Promise<FlowRunner> {
+    const published = await getPublishedVoiceFlow(context, flowId, context.flowVersion);
+    return new FlowRunner(published.flow, published.version, published.voiceProfileId);
   }
 
   async start(context: VoiceContext, callbacks: FlowRunnerCallbacks): Promise<FlowRunResult> {
@@ -186,6 +126,12 @@ export class FlowRunner {
     context: VoiceContext,
     callbacks: FlowRunnerCallbacks
   ): Promise<void> {
+    const runtimeContext: VoiceContext = {
+      ...context,
+      flowId: this.flow.id,
+      flowVersion: this.flowVersion,
+      voiceProfileId: this.voiceProfileId || context.voiceProfileId
+    };
     const phrases = splitIntoVoicePhrases(text);
     const chunks = await Promise.all(phrases.map(async (phrase, chunkIndex) => {
       if (isVoiceCacheConfigured()) {
@@ -193,17 +139,19 @@ export class FlowRunner {
           organizationId: context.organizationId,
           userId: context.userId,
           flowId: this.flow.id,
+          flowVersion: this.flowVersion,
+          voiceProfileId: runtimeContext.voiceProfileId,
           nodeId,
           chunkIndex,
           text: phrase
-        }, context);
+        }, runtimeContext);
       }
 
       return {
         text: phrase,
         index: chunkIndex,
         cached: false,
-        audio: await synthesizeSpeech({ text: phrase, context })
+        audio: await synthesizeSpeech({ text: phrase, context: runtimeContext })
       };
     }));
 
@@ -221,17 +169,6 @@ export class FlowRunner {
     if (!node) throw new Error(`Voice flow node not found: ${this.currentNodeId}`);
     return node;
   }
-}
-
-export function getVoiceFlow(flowId: string): VoiceFlow | undefined {
-  return sampleFlows[flowId];
-}
-
-export function listVoiceFlows(): Array<{ id: string; nodeCount: number }> {
-  return Object.values(sampleFlows).map((flow) => ({
-    id: flow.id,
-    nodeCount: Object.keys(flow.nodes).length
-  }));
 }
 
 function classifyFlowIntent(text: string): FlowIntent {

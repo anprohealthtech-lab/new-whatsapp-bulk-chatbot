@@ -1,21 +1,28 @@
 import { config } from "../config.js";
-import type { SpeechToTextInput } from "../types.js";
+import type { RuntimeCredential, SpeechToTextInput } from "../types.js";
+import { getRuntimeVoiceAgent } from "./tenantVoiceRepository.js";
 
 export async function transcribeSpeech(input: SpeechToTextInput): Promise<string> {
-  if (config.STT_PROVIDER === "openai") {
-    return transcribeWithOpenAI(input);
+  const runtimeAgent = await getRuntimeVoiceAgent(input.context);
+  const credential = runtimeAgent?.sttCredential;
+  const provider = credential?.provider || config.STT_PROVIDER;
+
+  if (provider === "openai") {
+    return transcribeWithOpenAI(input, credential);
   }
 
-  if (!config.STT_HTTP_URL) {
+  const httpUrl = stringSetting(credential?.settings, "url") || config.STT_HTTP_URL;
+  const apiKey = credential?.secret || config.STT_HTTP_API_KEY;
+  if (!httpUrl) {
     throw new Error("STT_HTTP_URL is required when STT_PROVIDER=http");
   }
 
-  const response = await fetch(config.STT_HTTP_URL, {
+  const response = await fetch(httpUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(config.STT_HTTP_API_KEY
-        ? { authorization: `Bearer ${config.STT_HTTP_API_KEY}` }
+      ...(apiKey
+        ? { authorization: `Bearer ${apiKey}` }
         : {})
     },
     body: JSON.stringify({
@@ -37,21 +44,27 @@ export async function transcribeSpeech(input: SpeechToTextInput): Promise<string
   return typeof data.text === "string" ? data.text.trim() : "";
 }
 
-async function transcribeWithOpenAI(input: SpeechToTextInput): Promise<string> {
-  if (!config.OPENAI_API_KEY) {
+async function transcribeWithOpenAI(
+  input: SpeechToTextInput,
+  credential?: RuntimeCredential
+): Promise<string> {
+  const apiKey = credential?.secret || config.OPENAI_API_KEY;
+  const model = stringSetting(credential?.settings, "model") || config.OPENAI_STT_MODEL;
+  const url = stringSetting(credential?.settings, "url") || config.OPENAI_TRANSCRIPTIONS_URL;
+  if (!apiKey) {
     throw new Error("OPENAI_API_KEY is required when STT_PROVIDER=openai");
   }
 
   const audio = buildOpenAIAudioFile(input);
   const form = new FormData();
-  form.append("model", config.OPENAI_STT_MODEL);
+  form.append("model", model);
   form.append("response_format", "json");
   form.append("file", audio.blob, audio.filename);
 
-  const response = await fetch(config.OPENAI_TRANSCRIPTIONS_URL, {
+  const response = await fetch(url, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${config.OPENAI_API_KEY}`
+      authorization: `Bearer ${apiKey}`
     },
     body: form
   });
@@ -63,6 +76,11 @@ async function transcribeWithOpenAI(input: SpeechToTextInput): Promise<string> {
 
   const data = (await response.json()) as { text?: unknown };
   return typeof data.text === "string" ? data.text.trim() : "";
+}
+
+function stringSetting(settings: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = settings?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function buildOpenAIAudioFile(input: SpeechToTextInput): { blob: Blob; filename: string } {

@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { config } from "../config.js";
-import { getVoiceFlow, listVoiceFlows, splitIntoVoicePhrases } from "../services/flowRunner.js";
+import { splitIntoVoicePhrases } from "../services/flowRunner.js";
+import { getPublishedVoiceFlow, listPublishedVoiceFlows } from "../services/flowRepository.js";
 import { getOrCreateFlowAudioChunk, isVoiceCacheConfigured, listFlowAudioChunks } from "../services/voiceFlowAudioCache.js";
 import type { VoiceContext } from "../types.js";
 
@@ -13,8 +14,15 @@ const tenantSchema = z.object({
   flowId: z.string().trim().default("health_camp_reminder")
 });
 
-voiceFlowCacheRouter.get("/api/voice-flows", (_req, res) => {
-  res.json({ flows: listVoiceFlows(), cacheConfigured: isVoiceCacheConfigured() });
+voiceFlowCacheRouter.get("/api/voice-flows", async (req, res) => {
+  try {
+    requireCacheAdmin(req.headers.authorization);
+    const params = tenantSchema.omit({ flowId: true }).parse(req.query);
+    const flows = await listPublishedVoiceFlows(params);
+    res.json({ flows, cacheConfigured: isVoiceCacheConfigured() });
+  } catch (error) {
+    sendRouteError(res, error);
+  }
 });
 
 voiceFlowCacheRouter.get("/api/voice-flow-audio", async (req, res) => {
@@ -38,15 +46,17 @@ voiceFlowCacheRouter.post("/api/voice-flow-audio/generate", async (req, res) => 
     }
 
     const params = tenantSchema.parse(req.body);
-    const flow = getVoiceFlow(params.flowId);
-    if (!flow) return res.status(404).json({ message: `Voice flow not found: ${params.flowId}` });
-
     const context: VoiceContext = {
       channel: "browser",
       sessionId: `cache-${Date.now()}`,
       organizationId: params.organizationId,
       userId: params.userId
     };
+    const published = await getPublishedVoiceFlow(context, params.flowId);
+    const flow = published.flow;
+    context.flowId = flow.id;
+    context.flowVersion = published.version;
+    context.voiceProfileId = published.voiceProfileId;
 
     const generated = [];
     for (const node of Object.values(flow.nodes)) {
@@ -60,6 +70,8 @@ voiceFlowCacheRouter.post("/api/voice-flow-audio/generate", async (req, res) => 
           organizationId: params.organizationId,
           userId: params.userId,
           flowId: flow.id,
+          flowVersion: published.version,
+          voiceProfileId: published.voiceProfileId,
           nodeId: node.id,
           chunkIndex,
           text: phrases[chunkIndex]

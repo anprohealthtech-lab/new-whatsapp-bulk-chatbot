@@ -4,6 +4,7 @@ import { processUtterance, processUtteranceStreaming } from "../services/convers
 import { FlowRunner } from "../services/flowRunner.js";
 import { transcribeSpeech } from "../services/stt.js";
 import type { VoiceContext } from "../types.js";
+import { verifyVoiceSessionToken } from "../services/sessionToken.js";
 
 interface BrowserClientMessage {
   type: "audio" | "audio_delta" | "audio_end" | "barge_in" | "start_flow" | "stop";
@@ -14,6 +15,10 @@ interface BrowserClientMessage {
   organizationId?: string;
   userId?: string;
   flowId?: string;
+  flowVersion?: number;
+  voiceAgentId?: string;
+  voiceProfileId?: string;
+  sessionToken?: string;
 }
 
 export function handleBrowserSocket(ws: WebSocket): void {
@@ -33,19 +38,40 @@ export function handleBrowserSocket(ws: WebSocket): void {
         return;
       }
 
-      const context: VoiceContext = {
+      const claims = message.sessionToken
+        ? verifyVoiceSessionToken(message.sessionToken, "browser")
+        : null;
+      if (config.VOICE_SESSION_TOKEN_SECRET && !claims) {
+        throw new Error("sessionToken is required");
+      }
+      const context: VoiceContext = claims ? {
+        channel: "browser",
+        sessionId: message.sessionId || crypto.randomUUID(),
+        organizationId: claims.organizationId,
+        userId: claims.userId,
+        voiceAgentId: claims.voiceAgentId,
+        flowId: claims.flowId,
+        flowVersion: claims.flowVersion,
+        voiceProfileId: claims.voiceProfileId
+      } : {
         channel: "browser",
         sessionId: message.sessionId || crypto.randomUUID(),
         organizationId: message.organizationId || config.DEFAULT_ORGANIZATION_ID,
-        userId: message.userId || config.DEFAULT_USER_ID
+        userId: message.userId || config.DEFAULT_USER_ID,
+        voiceAgentId: message.voiceAgentId,
+        flowId: message.flowId,
+        flowVersion: message.flowVersion,
+        voiceProfileId: message.voiceProfileId
       };
       bufferedContext = context;
       bufferedMimeType = message.mimeType || bufferedMimeType;
 
       if (message.type === "start_flow") {
-        flowRunner = new FlowRunner(message.flowId);
+        const flowId = context.flowId || message.flowId;
+        if (!flowId) throw new Error("flowId is required to start a tenant voice flow");
+        flowRunner = await FlowRunner.create(context, flowId);
         flowWaitingForInput = false;
-        sendStatus(ws, "Flow started", "flow", undefined, message.flowId || "health_camp_reminder");
+        sendStatus(ws, "Flow started", "flow", undefined, flowId);
         const result = await flowRunner.start(context, flowCallbacks(ws));
         flowWaitingForInput = result.status === "listening";
         if (flowWaitingForInput) {

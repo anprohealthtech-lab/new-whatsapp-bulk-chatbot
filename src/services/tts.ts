@@ -1,30 +1,37 @@
 import { config } from "../config.js";
-import type { TextToSpeechInput, TextToSpeechOutput } from "../types.js";
+import type { RuntimeVoiceProfile, TextToSpeechInput, TextToSpeechOutput } from "../types.js";
+import { getRuntimeVoiceAgent } from "./tenantVoiceRepository.js";
 
 export async function synthesizeSpeech(
   input: TextToSpeechInput
 ): Promise<TextToSpeechOutput> {
-  console.log(`[voice] Synthesizing speech with provider=${config.TTS_PROVIDER}`);
+  const runtimeAgent = await getRuntimeVoiceAgent(input.context);
+  const profile = runtimeAgent?.voiceProfile;
+  const provider = profile?.provider || config.TTS_PROVIDER;
+  console.log(`[voice] Synthesizing speech with provider=${provider}`);
 
-  if (config.TTS_PROVIDER === "fish") {
-    return synthesizeWithFishAudio(input);
+  if (provider === "fish") {
+    return synthesizeWithFishAudio(input, profile);
   }
 
-  if (!config.TTS_HTTP_URL) {
+  const httpUrl = stringSetting(profile?.credential.settings, "url") || config.TTS_HTTP_URL;
+  const httpApiKey = profile?.credential.secret || config.TTS_HTTP_API_KEY;
+  const voiceId = stringSetting(profile?.settings, "voiceId") || profile?.referenceId || config.TTS_VOICE_ID;
+  if (!httpUrl) {
     throw new Error("TTS_HTTP_URL is required when TTS_PROVIDER=http");
   }
 
-  const response = await fetch(config.TTS_HTTP_URL, {
+  const response = await fetch(httpUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(config.TTS_HTTP_API_KEY
-        ? { authorization: `Bearer ${config.TTS_HTTP_API_KEY}` }
+      ...(httpApiKey
+        ? { authorization: `Bearer ${httpApiKey}` }
         : {})
     },
     body: JSON.stringify({
       text: input.text,
-      voiceId: config.TTS_VOICE_ID,
+      voiceId,
       channel: input.context.channel,
       sessionId: input.context.sessionId,
       preferredFormats:
@@ -50,38 +57,52 @@ export async function synthesizeSpeech(
 }
 
 async function synthesizeWithFishAudio(
-  input: TextToSpeechInput
+  input: TextToSpeechInput,
+  profile?: RuntimeVoiceProfile
 ): Promise<TextToSpeechOutput> {
-  if (!config.FISH_AUDIO_API_KEY) {
+  const apiKey = profile?.credential.secret || config.FISH_AUDIO_API_KEY;
+  const referenceId = profile?.referenceId || config.FISH_AUDIO_REFERENCE_ID;
+  const apiUrl = stringSetting(profile?.credential.settings, "url") || config.FISH_AUDIO_TTS_URL;
+  const model = profile?.model || config.FISH_AUDIO_MODEL;
+  const format = profile?.format || config.FISH_AUDIO_FORMAT;
+  const temperature = numberSetting(profile?.settings, "temperature", config.FISH_AUDIO_TEMPERATURE);
+  const topP = numberSetting(profile?.settings, "topP", config.FISH_AUDIO_TOP_P);
+  const speed = numberSetting(profile?.settings, "speed", config.FISH_AUDIO_SPEED);
+  const volume = numberSetting(profile?.settings, "volume", config.FISH_AUDIO_VOLUME);
+  const sampleRate = optionalNumberSetting(profile?.settings, "sampleRate") || config.FISH_AUDIO_SAMPLE_RATE;
+  const bitrate = numberSetting(profile?.settings, "mp3Bitrate", config.FISH_AUDIO_MP3_BITRATE);
+  const latency = stringSetting(profile?.settings, "latency") || config.FISH_AUDIO_LATENCY;
+
+  if (!apiKey) {
     throw new Error("FISH_AUDIO_API_KEY is required when TTS_PROVIDER=fish");
   }
-  if (!config.FISH_AUDIO_REFERENCE_ID) {
+  if (!referenceId) {
     throw new Error("FISH_AUDIO_REFERENCE_ID is required when TTS_PROVIDER=fish");
   }
 
-  const response = await fetch(config.FISH_AUDIO_TTS_URL, {
+  const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${config.FISH_AUDIO_API_KEY}`,
+      "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "model": config.FISH_AUDIO_MODEL
+      "model": model
     },
     body: JSON.stringify({
       text: input.text,
-      reference_id: config.FISH_AUDIO_REFERENCE_ID,
-      temperature: config.FISH_AUDIO_TEMPERATURE,
-      top_p: config.FISH_AUDIO_TOP_P,
+      reference_id: referenceId,
+      temperature,
+      top_p: topP,
       prosody: {
-        speed: config.FISH_AUDIO_SPEED,
-        volume: config.FISH_AUDIO_VOLUME,
+        speed,
+        volume,
         normalize_loudness: true
       },
       chunk_length: 300,
       normalize: true,
-      format: config.FISH_AUDIO_FORMAT,
-      sample_rate: config.FISH_AUDIO_SAMPLE_RATE,
-      mp3_bitrate: config.FISH_AUDIO_MP3_BITRATE,
-      latency: config.FISH_AUDIO_LATENCY,
+      format,
+      sample_rate: sampleRate,
+      mp3_bitrate: bitrate,
+      latency,
       max_new_tokens: 1024,
       repetition_penalty: 1.2,
       min_chunk_length: 50,
@@ -96,7 +117,7 @@ async function synthesizeWithFishAudio(
   }
 
   const audioBuffer = Buffer.from(await response.arrayBuffer());
-  const mimeType = getMimeType(config.FISH_AUDIO_FORMAT);
+  const mimeType = getMimeType(format);
   console.log(`[voice] Fish Audio returned ${audioBuffer.length} bytes as ${mimeType}`);
   if (audioBuffer.length === 0) {
     throw new Error("Fish Audio returned empty audio");
@@ -106,6 +127,24 @@ async function synthesizeWithFishAudio(
     audioBase64: audioBuffer.toString("base64"),
     mimeType
   };
+}
+
+function stringSetting(settings: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = settings?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalNumberSetting(settings: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = settings?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function numberSetting(
+  settings: Record<string, unknown> | undefined,
+  key: string,
+  fallback: number
+): number {
+  return optionalNumberSetting(settings, key) ?? fallback;
 }
 
 function getMimeType(format: string): string {

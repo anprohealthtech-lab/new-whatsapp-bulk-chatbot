@@ -6,6 +6,13 @@ export interface VoiceContext {
   callerId?: string;
   organizationId: string;
   userId: string;
+  voiceAgentId?: string;
+  flowId?: string;
+  flowVersion?: number;
+  voiceProfileId?: string;
+  campaignId?: string;
+  contactId?: string;
+  gatewayId?: string;
 }
 
 export interface AgentReply {
@@ -31,4 +38,28 @@ export interface TextToSpeechOutput {
   mimeType?: string;
   audioUrl?: string;
   twilioMulawBase64?: string;
+}
+
+export interface RuntimeCredential {
+  id: string;
+  provider: "fish" | "openai" | "http";
+  credentialType: "stt" | "tts";
+  secret: string;
+  settings: Record<string, unknown>;
+}
+
+export interface RuntimeVoiceProfile {
+  id: string;
+  provider: "fish" | "http";
+  referenceId?: string;
+  model?: string;
+  format?: "mp3" | "wav" | "pcm" | "opus";
+  settings: Record<string, unknown>;
+  credential: RuntimeCredential;
+}
+
+export interface RuntimeVoiceAgent {
+  id: string;
+  sttCredential?: RuntimeCredential;
+  voiceProfile?: RuntimeVoiceProfile;
 }
