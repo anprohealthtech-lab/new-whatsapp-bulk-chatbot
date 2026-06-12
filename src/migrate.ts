@@ -6,9 +6,11 @@ export async function runMigrations(): Promise<void> {
     return;
   }
 
-  try {
-    console.log("[voice] Running voice cache migrations...");
-    await sql.unsafe(`
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      console.log(`[voice] Running voice cache migrations (attempt ${attempt}/${maxAttempts})...`);
+      await sql.unsafe(`
       CREATE TABLE IF NOT EXISTS "voice_flow_audio_chunks" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
         "organization_id" text NOT NULL,
@@ -136,10 +138,16 @@ export async function runMigrations(): Promise<void> {
         ON "voice_flows" ("organization_id", "user_id", "flow_key", "version");
       CREATE INDEX IF NOT EXISTS "voice_flows_published_lookup"
         ON "voice_flows" ("organization_id", "user_id", "flow_key", "status", "version" DESC);
-    `);
-    console.log("[voice] Voice cache migrations completed");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[voice] Voice cache migration failed: ${message}`);
+      `);
+      console.log("[voice] Voice cache migrations completed");
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[voice] Voice cache migration attempt ${attempt}/${maxAttempts} failed: ${message}`);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 3000));
+      }
+    }
   }
+  console.error("[voice] Database unavailable after migration retries; tenant voice calls will fail until connectivity is restored");
 }
