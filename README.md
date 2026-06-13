@@ -4,7 +4,8 @@ Separate deployable voice layer for the existing AI agent platform.
 
 This service owns live audio transport and provider glue:
 
-- Browser microphone test UI at `/`
+- Authenticated widget studio at `/`
+- Embeddable browser voice Q&A at `/?embed=<voice-agent-id>`
 - Browser WebSocket audio endpoint at `/browser/media`
 - Twilio webhook at `/twilio/voice`
 - Twilio Media Streams WebSocket endpoint at `/twilio/media`
@@ -13,6 +14,33 @@ This service owns live audio transport and provider glue:
 - Platform connector that calls your existing app for the actual AI answer
 
 The main platform should remain the source of truth for users, tenants, agents, knowledge base, prompts, and conversation history.
+
+## Website Widget
+
+Set the main application URL so the voice studio can reuse its login, tenant, and voice-agent records:
+
+```text
+MAIN_PLATFORM_URL=https://your-main-platform.com
+VOICE_SESSION_TOKEN_SECRET=the-same-secret-used-by-the-main-platform
+```
+
+`MAIN_PLATFORM_URL` is not supplied by another provider. It is the public root URL of the deployed main `NodeBackend`, for example `https://app.example.com`. For local development use the main backend origin, such as `http://localhost:5000`.
+
+Create `VOICE_SESSION_TOKEN_SECRET` yourself as a long random secret. Set the exact same value in the main backend and VoiceAgentService. In PowerShell, one suitable command is:
+
+```powershell
+[Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Also set `VOICE_AGENT_SHARED_SECRET` in the main backend to the same value as `PLATFORM_AGENT_SECRET` in VoiceAgentService. Keep this separate from the session-token secret.
+
+Sign in at the voice-service root URL, select an existing voice agent, upload its assistant image, save the widget branding, and copy the generated script:
+
+```html
+<script src="https://voice.yourdomain.com/embed.js" data-agent-id="VOICE_AGENT_ID" async></script>
+```
+
+Website visitors receive a short-lived, agent-scoped browser token. Organization and user IDs are not entered or exposed in the widget.
 
 ## Architecture
 

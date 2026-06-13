@@ -1,559 +1,665 @@
-const talkButton = document.getElementById("talkButton");
-const statusEl = document.getElementById("status");
-const logEl = document.getElementById("log");
-const organizationIdInput = document.getElementById("organizationId");
-const userIdInput = document.getElementById("userId");
-const modeInput = document.getElementById("mode");
-const flowIdInput = document.getElementById("flowId");
-const cacheTokenInput = document.getElementById("cacheToken");
-const generateCacheButton = document.getElementById("generateCacheButton");
-const refreshCacheButton = document.getElementById("refreshCacheButton");
-const cacheStatusEl = document.getElementById("cacheStatus");
-const chunkListEl = document.getElementById("chunkList");
+const app = document.getElementById("app");
+const params = new URLSearchParams(location.search);
+const embedAgentId = params.get("embed");
+const TOKEN_KEY = "voice_portal_token";
+const USER_KEY = "voice_portal_user";
+const DEFAULT_WIDGET = {
+  title: "Ask our AI assistant",
+  welcomeMessage: "Tap the microphone and ask a question.",
+  accentColor: "#6d5dfc",
+  avatarUrl: null,
+};
 
-let ws;
-let mediaRecorder;
-let audioContext;
-let analyser;
-let silenceMonitorId;
-let maxRecordingTimer;
-let audioChunks = [];
-let audioChunkSequence = 0;
-let pendingAudioChunkSends = [];
-let playbackQueue = [];
-let playbackActive = false;
-let playbackDoneStatus = null;
-let currentPlaybackAudio = null;
-let pendingFlowListen = null;
-let sessionId = crypto.randomUUID();
-let currentMimeType = "audio/webm;codecs=opus";
-
-const ORG_STORAGE_KEY = "voice_agent_organization_id";
-const USER_STORAGE_KEY = "voice_agent_user_id";
-const CACHE_TOKEN_STORAGE_KEY = "voice_agent_cache_token";
-const SILENCE_THRESHOLD = 0.018;
-const SILENCE_MS = 1200;
-const MIN_RECORDING_MS = 800;
-const MAX_RECORDING_MS = 15000;
-const FLOW_LISTEN_ARM_DELAY_MS = 350;
-
-organizationIdInput.value = localStorage.getItem(ORG_STORAGE_KEY) || "";
-userIdInput.value = localStorage.getItem(USER_STORAGE_KEY) || "";
-cacheTokenInput.value = localStorage.getItem(CACHE_TOKEN_STORAGE_KEY) || "";
-
-function addEntry(label, text) {
-  const entry = document.createElement("p");
-  entry.className = "entry";
-  entry.innerHTML = `<span class="label">${label}</span>${text}`;
-  logEl.prepend(entry);
+if (embedAgentId) {
+  renderEmbed(embedAgentId);
+} else {
+  bootstrapPortal();
 }
 
-function setStatus(text) {
-  statusEl.textContent = text;
-}
-
-function setCacheStatus(text) {
-  cacheStatusEl.textContent = text;
-}
-
-function formatStatus(message) {
-  const parts = [message.status];
-  if (typeof message.elapsedMs === "number") parts.push(`(${message.elapsedMs}ms)`);
-  if (message.detail) parts.push(`- ${message.detail}`);
-  return parts.join(" ");
-}
-
-function enqueueAgentAudio(message, onDone) {
-  const hasBase64 = Boolean(message.audioBase64);
-  const hasUrl = Boolean(message.audioUrl);
-  addEntry(
-    "Audio",
-    `Queued chunk ${message.index ?? 0} (${message.mimeType || "unknown"}, base64=${hasBase64}, url=${hasUrl})`
-  );
-
-  const audio = message.audioBase64
-    ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
-    : message.audioUrl
-      ? new Audio(message.audioUrl)
-      : null;
-
-  if (!audio) {
-    addEntry("Error", "TTS returned no playable audio.");
+async function bootstrapPortal() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    renderLogin();
     return;
   }
-
-  audio.preload = "auto";
-  audio.volume = 1;
-  playbackQueue.push({ audio, onDone });
-  talkButton.textContent = "Interrupt";
-  talkButton.disabled = false;
-  playNextAudio();
+  try {
+    const user = await api("/api/portal/me", { token });
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    await renderDashboard(user, token);
+  } catch {
+    clearAuth();
+    renderLogin("Your session expired. Please sign in again.");
+  }
 }
 
-function playNextAudio() {
-  if (playbackActive) return;
+function renderLogin(message = "") {
+  app.innerHTML = `
+    <main class="login-page">
+      <section class="login-art">
+        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Anpro Voice</div>
+        <div class="hero-copy">
+          <p class="eyebrow">Conversational Q&A</p>
+          <h1>Give your website a voice.</h1>
+          <p>Turn your existing knowledge base into a natural voice assistant that visitors can speak with from any page.</p>
+        </div>
+        <div class="voice-orb">
+          <span class="bars"><i></i><i></i><i></i><i></i><i></i></span>
+          <span>Securely linked to your organization</span>
+        </div>
+      </section>
+      <section class="login-form-wrap">
+        <div class="login-card">
+          <p class="kicker">Voice studio</p>
+          <h2>Welcome back</h2>
+          <p class="subtle">Sign in with the same account you use in the main platform. Your organization and user are linked automatically.</p>
+          <form id="loginForm" class="form-stack">
+            <div class="field">
+              <label for="username">Username</label>
+              <input id="username" name="username" autocomplete="username" required minlength="3" placeholder="Enter your username" />
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required minlength="6" placeholder="Enter your password" />
+            </div>
+            <div id="loginError" class="form-error">${escapeHtml(message)}</div>
+            <button id="loginButton" class="primary" type="submit">Sign in to Voice Studio</button>
+          </form>
+        </div>
+      </section>
+    </main>`;
 
-  const item = playbackQueue.shift();
-  if (!item) {
-    if (pendingFlowListen) {
-      const nextListen = pendingFlowListen;
-      pendingFlowListen = null;
-      setStatus("Listening soon");
-      window.setTimeout(() => {
-        startRecording(nextListen.organizationId, nextListen.userId).catch((error) => {
-          addEntry("Error", error.message);
-          resetControls("Error");
-        });
-      }, FLOW_LISTEN_ARM_DELAY_MS);
-      return;
+  document.getElementById("loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = document.getElementById("loginButton");
+    const error = document.getElementById("loginError");
+    button.disabled = true;
+    button.textContent = "Signing in...";
+    error.textContent = "";
+    try {
+      const result = await api("/api/portal/login", {
+        method: "POST",
+        body: {
+          username: event.currentTarget.username.value.trim(),
+          password: event.currentTarget.password.value,
+        },
+      });
+      localStorage.setItem(TOKEN_KEY, result.token);
+      localStorage.setItem(USER_KEY, JSON.stringify(result.user));
+      await renderDashboard(result.user, result.token);
+    } catch (requestError) {
+      error.textContent = requestError.message;
+      button.disabled = false;
+      button.textContent = "Sign in to Voice Studio";
     }
-
-    if (playbackDoneStatus) {
-      const status = playbackDoneStatus;
-      playbackDoneStatus = null;
-      resetControls(status);
-    }
-    return;
-  }
-
-  playbackActive = true;
-  currentPlaybackAudio = item.audio;
-  item.audio.onended = () => {
-    addEntry("Audio", "Chunk finished");
-    playbackActive = false;
-    currentPlaybackAudio = null;
-    item.onDone?.();
-    playNextAudio();
-  };
-  item.audio.onerror = () => {
-    playbackActive = false;
-    currentPlaybackAudio = null;
-    addEntry("Error", `Audio playback failed. readyState=${item.audio.readyState} networkState=${item.audio.networkState}`);
-    item.onDone?.();
-    playNextAudio();
-  };
-  addEntry("Audio", "Playing chunk");
-  item.audio.play().catch((error) => {
-    playbackActive = false;
-    currentPlaybackAudio = null;
-    addEntry("Error", `Audio playback failed: ${error.message}`);
-    item.onDone?.();
-    playNextAudio();
   });
 }
 
+async function renderDashboard(user, token) {
+  app.innerHTML = `
+    <main class="dashboard">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Anpro Voice</div>
+        <nav>
+          <p class="nav-label">Workspace</p>
+          <button class="nav-item active">${gridIcon()} Widget studio</button>
+          <button class="nav-item">${micIcon()} Voice agents</button>
+          <button class="nav-item">${codeIcon()} Install guide</button>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="user-pill">
+            <strong>${escapeHtml(user.username)}</strong>
+            <span>${escapeHtml(user.organizationId)}</span>
+          </div>
+          <button id="logoutButton" class="nav-item">Sign out</button>
+        </div>
+      </aside>
+      <section class="dashboard-main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Website assistant</p>
+            <h1>Voice Q&A widget</h1>
+            <p class="subtle">Brand your assistant, test the conversation, then add it to any website.</p>
+          </div>
+          <span class="status-chip">Tenant linked</span>
+        </header>
+        <div id="studioContent" class="card"><p class="subtle">Loading your voice agents...</p></div>
+      </section>
+    </main>`;
+  document.getElementById("logoutButton").addEventListener("click", () => {
+    clearAuth();
+    renderLogin();
+  });
+
+  try {
+    const agents = await api("/api/portal/agents", { token });
+    renderStudio(agents, token);
+  } catch (error) {
+    document.getElementById("studioContent").innerHTML =
+      `<h2>Unable to load voice agents</h2><p class="subtle">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function renderStudio(agents, token) {
+  const host = document.getElementById("studioContent");
+  host.className = "";
+  if (!agents.length) {
+    host.innerHTML = `
+      <section class="card">
+        <h2>Create a voice agent first</h2>
+        <p class="subtle">No voice agents are available for this account. Create one in the main application, then return here to publish its website widget.</p>
+      </section>`;
+    return;
+  }
+
+  let selectedAgent = agents[0];
+  const initial = normalizeWidget(selectedAgent.widgetSettings);
+  host.innerHTML = `
+    <div class="studio-grid">
+      <div>
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Widget identity</h2><p class="subtle">What visitors see when they open Q&A.</p></div>
+          </div>
+          <div class="settings-stack">
+            <div class="field">
+              <label for="agentSelect">Voice agent</label>
+              <select id="agentSelect">${agents.map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join("")}</select>
+            </div>
+            <div class="avatar-row">
+              <div id="avatarPreview" class="avatar-preview"></div>
+              <div>
+                <label class="secondary upload-button">Upload assistant photo<input id="avatarInput" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+                <p class="subtle" style="margin:9px 0 0;font-size:12px">PNG, JPG or WebP. The image is resized before upload.</p>
+              </div>
+            </div>
+            <div class="field">
+              <label for="widgetTitle">Assistant title</label>
+              <input id="widgetTitle" maxlength="80" />
+            </div>
+            <div class="field">
+              <label for="welcomeMessage">Welcome message</label>
+              <textarea id="welcomeMessage" maxlength="240"></textarea>
+            </div>
+            <div class="field">
+              <label for="accentColor">Brand color</label>
+              <div class="color-row">
+                <input id="accentColor" type="color" />
+                <input id="accentText" maxlength="7" />
+              </div>
+            </div>
+            <div class="actions">
+              <button id="saveWidget" class="primary">Save and refresh preview</button>
+              <button id="removeAvatar" class="secondary">Remove photo</button>
+            </div>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Install on your website</h2>
+          <p class="subtle">Paste this once before the closing <code>&lt;/body&gt;</code> tag. The launcher and Q&A window are created automatically.</p>
+          <div class="embed-code"><span id="embedCode"></span><button id="copyEmbed" class="copy-mini" title="Copy embed code">${copyIcon()}</button></div>
+        </section>
+      </div>
+      <section>
+        <div class="card-head"><div><h2>Live preview</h2><p class="subtle">This uses the same public experience as your website.</p></div></div>
+        <div class="preview-shell"><iframe id="widgetPreview" title="Voice Q&A widget preview" allow="microphone; autoplay"></iframe></div>
+      </section>
+    </div>`;
+
+  const titleInput = document.getElementById("widgetTitle");
+  const welcomeInput = document.getElementById("welcomeMessage");
+  const colorInput = document.getElementById("accentColor");
+  const colorText = document.getElementById("accentText");
+  const avatarInput = document.getElementById("avatarInput");
+  let avatarUrl = initial.avatarUrl;
+
+  function populate(agent) {
+    selectedAgent = agent;
+    const settings = normalizeWidget(agent.widgetSettings);
+    avatarUrl = settings.avatarUrl;
+    titleInput.value = settings.title;
+    welcomeInput.value = settings.welcomeMessage;
+    colorInput.value = settings.accentColor;
+    colorText.value = settings.accentColor;
+    renderAvatar(document.getElementById("avatarPreview"), settings.avatarUrl, agent.name);
+    refreshInstall();
+    refreshPreview();
+  }
+
+  function refreshInstall() {
+    const code = `<script src="${location.origin}/embed.js" data-agent-id="${selectedAgent.id}" async></scr` + `ipt>`;
+    document.getElementById("embedCode").textContent = code;
+  }
+
+  function refreshPreview() {
+    document.getElementById("widgetPreview").src = `/?embed=${encodeURIComponent(selectedAgent.id)}&v=${Date.now()}`;
+  }
+
+  document.getElementById("agentSelect").addEventListener("change", (event) => {
+    populate(agents.find((agent) => agent.id === event.target.value) || agents[0]);
+  });
+  colorInput.addEventListener("input", () => { colorText.value = colorInput.value; });
+  colorText.addEventListener("input", () => {
+    if (/^#[0-9a-f]{6}$/i.test(colorText.value)) colorInput.value = colorText.value;
+  });
+  avatarInput.addEventListener("change", async () => {
+    const file = avatarInput.files?.[0];
+    if (!file) return;
+    try {
+      avatarUrl = await resizeImage(file);
+      renderAvatar(document.getElementById("avatarPreview"), avatarUrl, selectedAgent.name);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  document.getElementById("removeAvatar").addEventListener("click", () => {
+    avatarUrl = null;
+    avatarInput.value = "";
+    renderAvatar(document.getElementById("avatarPreview"), null, selectedAgent.name);
+  });
+  document.getElementById("saveWidget").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const accentColor = colorText.value.trim();
+    if (!/^#[0-9a-f]{6}$/i.test(accentColor)) {
+      showToast("Enter a valid six-digit color, for example #6d5dfc.");
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Saving...";
+    try {
+      const updated = await api(`/api/portal/agents/${selectedAgent.id}/widget`, {
+        method: "PATCH",
+        token,
+        body: {
+          title: titleInput.value.trim(),
+          welcomeMessage: welcomeInput.value.trim(),
+          accentColor,
+          avatarUrl,
+        },
+      });
+      const index = agents.findIndex((agent) => agent.id === updated.id);
+      if (index >= 0) agents[index] = updated;
+      selectedAgent = updated;
+      refreshPreview();
+      showToast("Widget saved.");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Save and refresh preview";
+    }
+  });
+  document.getElementById("copyEmbed").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(document.getElementById("embedCode").textContent);
+    showToast("Embed code copied.");
+  });
+  populate(selectedAgent);
+}
+
+async function renderEmbed(agentId) {
+  app.innerHTML = `<main class="embed-page"><section class="voice-widget"><div class="conversation"><p class="welcome">Loading voice assistant...</p></div></section></main>`;
+  try {
+    const agent = await api(`/api/embed/${encodeURIComponent(agentId)}/config`);
+    const settings = normalizeWidget(agent.widgetSettings);
+    setAccent(settings.accentColor);
+    app.innerHTML = `
+      <main class="embed-page">
+        <section class="voice-widget">
+          <header class="widget-head">
+            <div id="widgetAvatar" class="widget-avatar"></div>
+            <div class="widget-title"><strong>${escapeHtml(settings.title)}</strong><span>Online and ready</span></div>
+          </header>
+          <div id="conversation" class="conversation">
+            <p id="welcome" class="welcome">${escapeHtml(settings.welcomeMessage)}</p>
+          </div>
+          <footer class="widget-controls">
+            <div id="voiceStatus" class="listen-status">Tap to ask a question</div>
+            <div class="mic-row">
+              <button id="micButton" class="mic-button" type="button" aria-label="Start speaking">${micSvg()}</button>
+              <button id="endButton" class="end-button hidden" type="button">End</button>
+            </div>
+            <div class="powered">Voice Q&A powered by Anpro</div>
+          </footer>
+        </section>
+      </main>`;
+    renderAvatar(document.getElementById("widgetAvatar"), settings.avatarUrl, agent.name);
+    createVoiceRuntime(agentId);
+  } catch (error) {
+    app.innerHTML = `<main class="embed-page"><section class="voice-widget"><div class="conversation"><p class="welcome">${escapeHtml(error.message)}</p></div></section></main>`;
+  }
+}
+
+function createVoiceRuntime(agentId) {
+  const micButton = document.getElementById("micButton");
+  const endButton = document.getElementById("endButton");
+  const status = document.getElementById("voiceStatus");
+  const conversation = document.getElementById("conversation");
+  let ws;
+  let mediaRecorder;
+  let audioContext;
+  let analyser;
+  let silenceFrame;
+  let maxTimer;
+  let chunks = [];
+  let sends = [];
+  let sequence = 0;
+  let mimeType = "audio/webm;codecs=opus";
+  let sessionToken = "";
+  let sessionId = crypto.randomUUID();
+  let playbackQueue = [];
+  let playing = false;
+  let currentAudio;
+  let replyReceived = false;
+
+  micButton.addEventListener("click", async () => {
+    if (playing) {
+      send({ type: "barge_in", sessionId, sessionToken });
+      cleanup();
+    }
+    if (mediaRecorder?.state === "recording") {
+      stopRecording();
+      return;
+    }
+    try {
+      await start();
+    } catch (error) {
+      setStatus(error.message);
+      cleanup();
+    }
+  });
+  endButton.addEventListener("click", () => {
+    send({ type: "stop", sessionId, sessionToken });
+    cleanup();
+    setStatus("Conversation ended");
+  });
+
+  async function start() {
+    unlockAudio();
+    setStatus("Connecting...");
+    const tokenResult = await api(`/api/embed/${encodeURIComponent(agentId)}/session-token`, { method: "POST" });
+    sessionToken = tokenResult.token;
+    sessionId = crypto.randomUUID();
+    replyReceived = false;
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${protocol}://${location.host}/browser/media`);
+    ws.onopen = startRecording;
+    ws.onerror = () => { setStatus("Unable to connect"); cleanup(); };
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "status") setStatus(humanStatus(message.status));
+      if (message.type === "audio_chunk") enqueueAudio(message);
+      if (message.type === "reply") {
+        replyReceived = true;
+        addMessage("user", message.transcript);
+        addMessage("agent", message.text);
+        if (!message.streaming) enqueueAudio(message);
+        else if (!playing && !playbackQueue.length) finishTurn();
+      }
+      if (message.type === "error") {
+        setStatus(message.error);
+        cleanup();
+      }
+    };
+  }
+
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    sends = [];
+    sequence = 0;
+    mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    mimeType = mediaRecorder.mimeType || "audio/webm";
+    monitorSilence(stream);
+    mediaRecorder.ondataavailable = (event) => {
+      if (!event.data.size) return;
+      chunks.push(event.data);
+      const currentSequence = sequence++;
+      sends.push(blobToBase64(event.data).then((audioBase64) => send({
+        type: "audio_delta", audioBase64, sequence: currentSequence, mimeType,
+        sessionId, sessionToken,
+      })));
+    };
+    mediaRecorder.onstop = async () => {
+      mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size < 1024) {
+        setStatus("Please speak a little longer");
+        cleanup(false);
+        return;
+      }
+      await Promise.allSettled(sends);
+      send({
+        type: "audio_end",
+        audioBase64: await blobToBase64(blob),
+        mimeType,
+        sessionId,
+        sessionToken,
+      });
+      setStatus("Thinking...");
+    };
+    mediaRecorder.start(250);
+    micButton.classList.add("recording");
+    endButton.classList.remove("hidden");
+    setStatus("Listening... tap when finished");
+    maxTimer = setTimeout(stopRecording, 15000);
+  }
+
+  function stopRecording() {
+    if (mediaRecorder?.state !== "recording") return;
+    micButton.classList.remove("recording");
+    setStatus("Preparing your question...");
+    mediaRecorder.stop();
+    stopMonitor();
+  }
+
+  function monitorSilence(stream) {
+    audioContext = new AudioContext();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    audioContext.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+    const started = Date.now();
+    let heardSpeech = false;
+    let lastSpeech = started;
+    const tick = () => {
+      if (!analyser || mediaRecorder?.state !== "recording") return;
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) sum += ((sample - 128) / 128) ** 2;
+      const rms = Math.sqrt(sum / samples.length);
+      const now = Date.now();
+      if (rms > .018) {
+        heardSpeech = true;
+        lastSpeech = now;
+      } else if (heardSpeech && now - started > 800 && now - lastSpeech > 1200) {
+        stopRecording();
+        return;
+      }
+      silenceFrame = requestAnimationFrame(tick);
+    };
+    silenceFrame = requestAnimationFrame(tick);
+  }
+
+  function enqueueAudio(message) {
+    const audio = message.audioBase64
+      ? new Audio(`data:${message.mimeType || "audio/mpeg"};base64,${message.audioBase64}`)
+      : message.audioUrl ? new Audio(message.audioUrl) : null;
+    if (!audio) return;
+    playbackQueue.push(audio);
+    playNext();
+  }
+
+  function playNext() {
+    if (playing) return;
+    const audio = playbackQueue.shift();
+    if (!audio) {
+      if (replyReceived) finishTurn();
+      else setStatus("Preparing the rest of the answer...");
+      return;
+    }
+    playing = true;
+    currentAudio = audio;
+    setStatus("Assistant is speaking");
+    audio.onended = audio.onerror = () => {
+      playing = false;
+      currentAudio = null;
+      playNext();
+    };
+    audio.play().catch(() => {
+      playing = false;
+      currentAudio = null;
+      playNext();
+    });
+  }
+
+  function finishTurn() {
+    if (mediaRecorder?.state === "recording") return;
+    ws?.close();
+    ws = null;
+    endButton.classList.add("hidden");
+    setStatus("Tap to ask another question");
+  }
+
+  function cleanup(closeSocket = true) {
+    stopMonitor();
+    if (mediaRecorder?.state === "recording") {
+      mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+      mediaRecorder = null;
+    }
+    currentAudio?.pause();
+    currentAudio = null;
+    playbackQueue = [];
+    playing = false;
+    if (closeSocket) ws?.close();
+    ws = null;
+    micButton.classList.remove("recording");
+    endButton.classList.add("hidden");
+  }
+
+  function stopMonitor() {
+    if (silenceFrame) cancelAnimationFrame(silenceFrame);
+    if (maxTimer) clearTimeout(maxTimer);
+    audioContext?.close().catch(() => {});
+    audioContext = null;
+    analyser = null;
+  }
+
+  function send(message) {
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+  }
+  function setStatus(text) { status.textContent = text; }
+  function addMessage(role, text) {
+    document.getElementById("welcome")?.remove();
+    const row = document.createElement("div");
+    row.className = `message ${role === "user" ? "user" : ""}`;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = text;
+    row.appendChild(bubble);
+    conversation.appendChild(row);
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+}
+
+async function api(url, options = {}) {
+  const headers = { accept: "application/json" };
+  if (options.token) headers.authorization = `Bearer ${options.token}`;
+  if (options.body) headers["content-type"] = "application/json";
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || "Request failed");
+  return data;
+}
+
+function normalizeWidget(settings) {
+  return { ...DEFAULT_WIDGET, ...(settings || {}) };
+}
+
+function renderAvatar(element, url, name) {
+  element.textContent = "";
+  if (url) {
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = "";
+    element.appendChild(image);
+  } else {
+    element.textContent = initials(name);
+  }
+}
+
+function resizeImage(file) {
+  if (!file.type.startsWith("image/")) return Promise.reject(new Error("Choose an image file."));
+  if (file.size > 5 * 1024 * 1024) return Promise.reject(new Error("Photo must be smaller than 5 MB."));
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      const size = 320;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext("2d");
+      const scale = Math.max(size / image.width, size / image.height);
+      const width = image.width * scale;
+      const height = image.height * scale;
+      context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+      URL.revokeObjectURL(objectUrl);
+      resolve(canvas.toDataURL("image/jpeg", .82));
+    };
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("Could not read that photo.")); };
+    image.src = objectUrl;
+  });
+}
+
+function setAccent(hex) {
+  document.documentElement.style.setProperty("--accent", hex);
+  const rgb = hex.match(/[a-f\d]{2}/gi)?.map((value) => parseInt(value, 16)) || [109, 93, 252];
+  document.documentElement.style.setProperty("--accent-rgb", rgb.join(","));
+}
+function initials(name) { return String(name || "AI").split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
+function clearAuth() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); }
+function showToast(text) {
+  document.querySelector(".toast")?.remove();
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = text;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2600);
+}
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      resolve(result.split(",")[1] || "");
-    };
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
 }
-
-function sendAudioMessage(message) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message));
-  }
+function unlockAudio() {
+  const audio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==");
+  audio.volume = 0;
+  audio.play().catch(() => {});
 }
-
-function startFlowListeningAfterPlayback(organizationId, userId) {
-  pendingFlowListen = { organizationId, userId };
-  if (playbackActive || playbackQueue.length) {
-    setStatus("Waiting for audio to finish");
-    return;
-  }
-
-  playNextAudio();
-}
-
-function getTenantInput() {
-  const organizationId = organizationIdInput.value.trim();
-  const userId = userIdInput.value.trim();
-  if (!organizationId || !userId) {
-    throw new Error("Enter Organization ID and User ID first.");
-  }
-
-  localStorage.setItem(ORG_STORAGE_KEY, organizationId);
-  localStorage.setItem(USER_STORAGE_KEY, userId);
-  localStorage.setItem(CACHE_TOKEN_STORAGE_KEY, cacheTokenInput.value.trim());
-  return { organizationId, userId, flowId: flowIdInput.value };
-}
-
-function cacheHeaders() {
-  const token = cacheTokenInput.value.trim();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function refreshCacheChunks() {
-  const params = getTenantInput();
-  setCacheStatus("Loading");
-  const query = new URLSearchParams(params);
-  const response = await fetch(`/api/voice-flow-audio?${query}`, {
-    headers: cacheHeaders()
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Failed to load cached chunks.");
-
-  renderChunks(data.chunks || []);
-  setCacheStatus(`${data.chunks?.length || 0} chunks`);
-}
-
-async function generateCacheChunks() {
-  const body = getTenantInput();
-  setCacheStatus("Generating");
-  generateCacheButton.disabled = true;
-  refreshCacheButton.disabled = true;
-  try {
-    const response = await fetch("/api/voice-flow-audio/generate", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...cacheHeaders()
-      },
-      body: JSON.stringify(body)
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || "Failed to generate chunks.");
-
-    const createdCount = (data.generated || []).filter((chunk) => !chunk.cached).length;
-    const cachedCount = (data.generated || []).filter((chunk) => chunk.cached).length;
-    addEntry("Cache", `Generated ${createdCount}, reused ${cachedCount}.`);
-    await refreshCacheChunks();
-  } finally {
-    generateCacheButton.disabled = false;
-    refreshCacheButton.disabled = false;
-  }
-}
-
-function renderChunks(chunks) {
-  chunkListEl.innerHTML = "";
-  if (!chunks.length) {
-    chunkListEl.textContent = "No cached chunks yet.";
-    return;
-  }
-
-  for (const chunk of chunks) {
-    const row = document.createElement("div");
-    row.className = "chunk-row";
-    const details = document.createElement("div");
-    details.innerHTML = `<strong>${chunk.node_id} #${chunk.chunk_index}</strong><span>${chunk.text}</span>`;
-
-    const play = document.createElement("button");
-    play.type = "button";
-    play.className = "icon-button";
-    play.textContent = "Play";
-    play.addEventListener("click", () => {
-      enqueueAgentAudio({
-        index: chunk.chunk_index,
-        audioUrl: chunk.audio_url,
-        mimeType: chunk.mime_type
-      });
-    });
-
-    row.append(details, play);
-    chunkListEl.append(row);
-  }
-}
-
-async function start() {
-  unlockAudioPlayback();
-
-  const organizationId = organizationIdInput.value.trim();
-  const userId = userIdInput.value.trim();
-
-  if (!organizationId || !userId) {
-    addEntry("Error", "Enter a valid Organization ID and User ID before recording.");
-    setStatus("Missing tenant IDs");
-    return;
-  }
-
-  localStorage.setItem(ORG_STORAGE_KEY, organizationId);
-  localStorage.setItem(USER_STORAGE_KEY, userId);
-
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${protocol}://${location.host}/browser/media`);
-  audioChunks = [];
-  audioChunkSequence = 0;
-  pendingAudioChunkSends = [];
-  const mode = modeInput.value;
-
-  ws.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "status") {
-      setStatus(message.status);
-      addEntry("Status", formatStatus(message));
-    }
-    if (message.type === "audio_chunk") {
-      setStatus(`Queued chunk ${message.index + 1}`);
-      enqueueAgentAudio(message);
-    }
-    if (message.type === "flow_transcript") {
-      addEntry("You", message.transcript);
-    }
-    if (message.type === "flow_listen") {
-      addEntry("Status", "Flow is listening");
-      startFlowListeningAfterPlayback(organizationId, userId);
-    }
-    if (message.type === "flow_end") {
-      addEntry("Status", "Flow ended");
-      if (playbackActive || playbackQueue.length) {
-        playbackDoneStatus = "Idle";
-      } else {
-        resetControls("Idle");
-      }
-    }
-    if (message.type === "reply") {
-      addEntry("You", message.transcript);
-      addEntry("Agent", message.text);
-      if (message.streaming) {
-        setStatus("Finishing playback");
-        if (playbackActive || playbackQueue.length) {
-          playbackDoneStatus = "Idle";
-        } else {
-          resetControls("Idle");
-        }
-      } else {
-        setStatus("Playing reply");
-        enqueueAgentAudio(message, () => resetControls("Idle"));
-      }
-    }
-    if (message.type === "error") {
-      addEntry("Error", message.error);
-      resetControls("Error");
-    }
+function humanStatus(value) {
+  const labels = {
+    "Transcription started": "Understanding your question...",
+    "Agent started": "Finding the best answer...",
+    "TTS started": "Preparing voice reply...",
+    "Received audio": "Understanding your question...",
   };
-
-  ws.onopen = () => {
-    if (mode === "flow") {
-      talkButton.textContent = "Stop";
-      talkButton.disabled = false;
-      talkButton.classList.add("recording");
-      setStatus("Flow speaking");
-      sendAudioMessage({
-        type: "start_flow",
-        sessionId,
-        organizationId,
-        userId,
-        flowId: flowIdInput.value
-      });
-    } else {
-      startRecording(organizationId, userId).catch((error) => {
-        addEntry("Error", error.message);
-        resetControls("Error");
-      });
-    }
-  };
-
-  ws.onerror = () => {
-    addEntry("Error", "Voice socket connection failed.");
-    resetControls("Error");
-  };
+  return labels[value] || value;
 }
-
-async function startRecording(organizationId, userId) {
-  cleanupAudio();
-  audioChunks = [];
-  pendingAudioChunkSends = [];
-  audioChunkSequence = 0;
-
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  startSilenceMonitor(stream);
-
-  currentMimeType = "audio/webm;codecs=opus";
-  const options = MediaRecorder.isTypeSupported(currentMimeType)
-    ? { mimeType: currentMimeType }
-    : undefined;
-  mediaRecorder = new MediaRecorder(stream, options);
-  currentMimeType = mediaRecorder.mimeType || currentMimeType;
-
-  mediaRecorder.ondataavailable = async (event) => {
-    if (!event.data.size) return;
-    audioChunks.push(event.data);
-    const sequence = audioChunkSequence++;
-    const sendPromise = blobToBase64(event.data).then((audioBase64) => {
-      sendAudioMessage({
-        type: "audio_delta",
-        audioBase64,
-        sequence,
-        mimeType: currentMimeType,
-        sessionId,
-        organizationId,
-        userId
-      });
-    });
-    pendingAudioChunkSends.push(sendPromise);
-  };
-
-  mediaRecorder.onstop = async () => {
-    try {
-      mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
-      if (ws.readyState !== WebSocket.OPEN) return;
-
-      const audioBlob = new Blob(audioChunks, { type: currentMimeType });
-      if (audioBlob.size < 1024) {
-        addEntry("Error", "Recording was too short. Please speak for a little longer.");
-        resetControls("Too short");
-        return;
-      }
-
-      await Promise.allSettled(pendingAudioChunkSends);
-      const audioBase64 = await blobToBase64(audioBlob);
-      setStatus("Thinking");
-      sendAudioMessage({
-        type: "audio_end",
-        audioBase64,
-        mimeType: currentMimeType,
-        sessionId,
-        organizationId,
-        userId
-      });
-      audioChunks = [];
-      pendingAudioChunkSends = [];
-      audioChunkSequence = 0;
-    } catch (error) {
-      addEntry("Error", error.message);
-      resetControls("Error");
-    }
-  };
-
-  mediaRecorder.start(250);
-  talkButton.textContent = "Stop";
-  talkButton.disabled = false;
-  talkButton.classList.add("recording");
-  setStatus("Recording");
-  maxRecordingTimer = window.setTimeout(() => {
-    if (mediaRecorder?.state === "recording") {
-      stop("Max recording reached");
-    }
-  }, MAX_RECORDING_MS);
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+  })[character]);
 }
-
-function unlockAudioPlayback() {
-  const silentAudio = new Audio(
-    "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA=="
-  );
-  silentAudio.volume = 0;
-  silentAudio.play().catch(() => {});
-}
-
-function stop() {
-  if (mediaRecorder?.state === "recording") {
-    talkButton.disabled = true;
-    setStatus("Preparing audio");
-    mediaRecorder.stop();
-  }
-}
-
-function startSilenceMonitor(stream) {
-  audioContext = new AudioContext();
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 1024;
-
-  const source = audioContext.createMediaStreamSource(stream);
-  source.connect(analyser);
-
-  const samples = new Uint8Array(analyser.fftSize);
-  const startedAt = Date.now();
-  let hasSpeech = false;
-  let lastSpeechAt = startedAt;
-
-  const tick = () => {
-    if (!analyser || mediaRecorder?.state !== "recording") {
-      silenceMonitorId = window.requestAnimationFrame(tick);
-      return;
-    }
-
-    analyser.getByteTimeDomainData(samples);
-    let sum = 0;
-    for (const sample of samples) {
-      const normalized = (sample - 128) / 128;
-      sum += normalized * normalized;
-    }
-
-    const rms = Math.sqrt(sum / samples.length);
-    const now = Date.now();
-    if (rms > SILENCE_THRESHOLD) {
-      hasSpeech = true;
-      lastSpeechAt = now;
-      setStatus("Recording");
-    } else if (hasSpeech && now - startedAt > MIN_RECORDING_MS && now - lastSpeechAt > SILENCE_MS) {
-      setStatus("Pause detected");
-      stop();
-      return;
-    }
-
-    silenceMonitorId = window.requestAnimationFrame(tick);
-  };
-
-  silenceMonitorId = window.requestAnimationFrame(tick);
-}
-
-function cleanupAudio() {
-  if (silenceMonitorId) {
-    window.cancelAnimationFrame(silenceMonitorId);
-    silenceMonitorId = undefined;
-  }
-  if (maxRecordingTimer) {
-    window.clearTimeout(maxRecordingTimer);
-    maxRecordingTimer = undefined;
-  }
-  audioContext?.close().catch(() => {});
-  audioContext = undefined;
-  analyser = undefined;
-}
-
-function resetControls(status) {
-  cleanupAudio();
-  ws?.close();
-  mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
-  currentPlaybackAudio?.pause();
-  currentPlaybackAudio = null;
-  playbackQueue = [];
-  playbackActive = false;
-  playbackDoneStatus = null;
-  pendingFlowListen = null;
-  talkButton.textContent = "Start";
-  talkButton.disabled = false;
-  talkButton.classList.remove("recording");
-  setStatus(status);
-}
-
-async function interruptAndRestart() {
-  sendAudioMessage({ type: "barge_in", sessionId });
-  resetControls("Interrupted");
-  await start();
-}
-
-talkButton.addEventListener("click", () => {
-  if (playbackActive || playbackQueue.length) {
-    interruptAndRestart().catch((error) => {
-      addEntry("Error", error.message);
-      resetControls("Error");
-    });
-  } else if (mediaRecorder?.state === "recording") {
-    stop();
-  } else {
-    start().catch((error) => {
-      addEntry("Error", error.message);
-      resetControls("Error");
-    });
-  }
-});
-
-generateCacheButton.addEventListener("click", () => {
-  generateCacheChunks().catch((error) => {
-    addEntry("Error", error.message);
-    setCacheStatus("Error");
-  });
-});
-
-refreshCacheButton.addEventListener("click", () => {
-  refreshCacheChunks().catch((error) => {
-    addEntry("Error", error.message);
-    setCacheStatus("Error");
-  });
-});
+function waveIcon() { return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13v-2M8 17V7m4 13V4m4 13V7m4 6v-2" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg>`; }
+function micSvg() { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.92V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.58A6 6 0 0 0 18 11.5Z"/></svg>`; }
+function micIcon() { return `<span>${micSvg()}</span>`; }
+function gridIcon() { return `<span>◫</span>`; }
+function codeIcon() { return `<span>&lt;/&gt;</span>`; }
+function copyIcon() { return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" stroke="currentColor" stroke-width="2"/></svg>`; }

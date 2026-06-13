@@ -3,67 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Voice Agent</title>
+    <meta name="theme-color" content="#17152f" />
+    <title>Voice Q&A Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="panel">
-        <div>
-          <p class="eyebrow">Voice Agent</p>
-          <h1>Live browser test console</h1>
-        </div>
-
-        <div class="tenant-grid">
-          <label>
-            <span>Organization ID</span>
-            <input id="organizationId" type="text" placeholder="Organization UUID from main app" />
-          </label>
-          <label>
-            <span>User ID</span>
-            <input id="userId" type="text" placeholder="User UUID from main app" />
-          </label>
-          <label>
-            <span>Mode</span>
-            <select id="mode">
-              <option value="qa">Q&A</option>
-              <option value="flow">Campaign Flow</option>
-            </select>
-          </label>
-          <label>
-            <span>Flow</span>
-            <select id="flowId">
-              <option value="health_camp_reminder">Health Camp Reminder</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="controls">
-          <button id="talkButton" type="button">Start</button>
-          <span id="status">Idle</span>
-        </div>
-
-        <section class="cache-panel" aria-label="Pre-generated flow audio">
-          <div>
-            <p class="eyebrow">Flow Audio Cache</p>
-            <h2>Pre-generated chunks</h2>
-          </div>
-          <label>
-            <span>Admin token</span>
-            <input id="cacheToken" type="password" placeholder="Only needed if configured" />
-          </label>
-          <div class="controls">
-            <button id="generateCacheButton" type="button">Generate</button>
-            <button id="refreshCacheButton" type="button" class="secondary">Refresh</button>
-            <span id="cacheStatus">Not checked</span>
-          </div>
-          <div class="chunk-list" id="chunkList"></div>
-        </section>
-
-        <div class="log" id="log"></div>
-      </section>
-    </main>
-
+    <div id="app" aria-live="polite"></div>
     <script src="/main.js"></script>
   </body>
 </html>

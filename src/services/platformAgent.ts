@@ -21,7 +21,8 @@ export async function askPlatformAgent(
       sessionId: context.sessionId,
       callerId: context.callerId,
       organizationId: context.organizationId,
-      userId: context.userId
+      userId: context.userId,
+      voiceAgentId: context.voiceAgentId
     })
   });
 
@@ -68,6 +69,7 @@ export async function askPlatformAgentStreaming(
       callerId: context.callerId,
       organizationId: context.organizationId,
       userId: context.userId,
+      voiceAgentId: context.voiceAgentId,
       stream: true
     })
   });

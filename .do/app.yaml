@@ -21,7 +21,13 @@ services:
       - key: PLATFORM_AGENT_URL
         scope: RUN_TIME
         type: SECRET
+      - key: MAIN_PLATFORM_URL
+        scope: RUN_TIME
+        type: SECRET
       - key: PLATFORM_AGENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: VOICE_SESSION_TOKEN_SECRET
         scope: RUN_TIME
         type: SECRET
       - key: DATABASE_URL
