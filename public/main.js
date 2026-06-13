@@ -8,6 +8,9 @@ const DEFAULT_WIDGET = {
   welcomeMessage: "Tap the microphone and ask a question.",
   accentColor: "#6d5dfc",
   avatarUrl: null,
+  starterText: "Hello! Ask me anything and I will do my best to help.",
+  starterAudioUrl: null,
+  starterAudioMimeType: null,
 };
 
 if (embedAgentId) {
@@ -181,6 +184,15 @@ function renderStudio(agents, token) {
               <textarea id="welcomeMessage" maxlength="240"></textarea>
             </div>
             <div class="field">
+              <label for="starterText">Spoken welcome and starter</label>
+              <textarea id="starterText" maxlength="500" placeholder="What should the assistant say before listening?"></textarea>
+              <p class="subtle" style="margin:0;font-size:12px">Generate this once. The cached audio plays when a visitor selects Talk now, then Q&A listening begins.</p>
+            </div>
+            <div class="actions">
+              <button id="generateStarter" class="secondary">Generate starter voice</button>
+              <button id="previewStarter" class="ghost" disabled>Preview voice</button>
+            </div>
+            <div class="field">
               <label for="accentColor">Brand color</label>
               <div class="color-row">
                 <input id="accentColor" type="color" />
@@ -207,10 +219,14 @@ function renderStudio(agents, token) {
 
   const titleInput = document.getElementById("widgetTitle");
   const welcomeInput = document.getElementById("welcomeMessage");
+  const starterInput = document.getElementById("starterText");
   const colorInput = document.getElementById("accentColor");
   const colorText = document.getElementById("accentText");
   const avatarInput = document.getElementById("avatarInput");
   let avatarUrl = initial.avatarUrl;
+  let starterAudioUrl = initial.starterAudioUrl;
+  let starterAudioMimeType = initial.starterAudioMimeType;
+  let generatedStarterText = initial.starterAudioUrl ? initial.starterText : "";
 
   function populate(agent) {
     selectedAgent = agent;
@@ -218,6 +234,11 @@ function renderStudio(agents, token) {
     avatarUrl = settings.avatarUrl;
     titleInput.value = settings.title;
     welcomeInput.value = settings.welcomeMessage;
+    starterInput.value = settings.starterText;
+    starterAudioUrl = settings.starterAudioUrl;
+    starterAudioMimeType = settings.starterAudioMimeType;
+    generatedStarterText = settings.starterAudioUrl ? settings.starterText : "";
+    document.getElementById("previewStarter").disabled = !starterAudioUrl;
     colorInput.value = settings.accentColor;
     colorText.value = settings.accentColor;
     renderAvatar(document.getElementById("avatarPreview"), settings.avatarUrl, agent.name);
@@ -251,6 +272,43 @@ function renderStudio(agents, token) {
       showToast(error.message);
     }
   });
+  starterInput.addEventListener("input", () => {
+    if (starterInput.value.trim() !== generatedStarterText) {
+      starterAudioUrl = null;
+      starterAudioMimeType = null;
+      document.getElementById("previewStarter").disabled = true;
+    }
+  });
+  document.getElementById("generateStarter").addEventListener("click", async (event) => {
+    const text = starterInput.value.trim();
+    if (!text) {
+      showToast("Enter the spoken welcome text first.");
+      return;
+    }
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Generating voice...";
+    try {
+      const result = await api(`/api/portal/agents/${selectedAgent.id}/starter-audio`, {
+        method: "POST",
+        token,
+        body: { text },
+      });
+      starterAudioUrl = result.audioUrl;
+      starterAudioMimeType = result.mimeType;
+      generatedStarterText = text;
+      document.getElementById("previewStarter").disabled = false;
+      showToast(result.cached ? "Starter voice already cached." : "Starter voice generated.");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Generate starter voice";
+    }
+  });
+  document.getElementById("previewStarter").addEventListener("click", () => {
+    if (starterAudioUrl) new Audio(starterAudioUrl).play().catch(() => showToast("Audio preview was blocked."));
+  });
   document.getElementById("removeAvatar").addEventListener("click", () => {
     avatarUrl = null;
     avatarInput.value = "";
@@ -274,6 +332,9 @@ function renderStudio(agents, token) {
           welcomeMessage: welcomeInput.value.trim(),
           accentColor,
           avatarUrl,
+          starterText: starterInput.value.trim(),
+          starterAudioUrl,
+          starterAudioMimeType,
         },
       });
       const index = agents.findIndex((agent) => agent.id === updated.id);
@@ -309,12 +370,15 @@ async function renderEmbed(agentId) {
             <div class="widget-title"><strong>${escapeHtml(settings.title)}</strong><span>Online and ready</span></div>
           </header>
           <div id="conversation" class="conversation">
-            <p id="welcome" class="welcome">${escapeHtml(settings.welcomeMessage)}</p>
+            <div class="widget-hero">
+              <div id="heroAvatar" class="hero-avatar"></div>
+              <p id="welcome" class="welcome">${escapeHtml(settings.welcomeMessage)}</p>
+            </div>
           </div>
           <footer class="widget-controls">
-            <div id="voiceStatus" class="listen-status">Tap to ask a question</div>
+            <div id="voiceStatus" class="listen-status">${settings.starterAudioUrl ? "Your assistant will welcome you, then listen." : "Tap to ask a question"}</div>
             <div class="mic-row">
-              <button id="micButton" class="mic-button" type="button" aria-label="Start speaking">${micSvg()}</button>
+              <button id="micButton" class="mic-button talk-button" type="button" aria-label="Talk now">${micSvg()}<span>Talk now</span></button>
               <button id="endButton" class="end-button hidden" type="button">End</button>
             </div>
             <div class="powered">Voice Q&A powered by Anpro</div>
@@ -322,13 +386,14 @@ async function renderEmbed(agentId) {
         </section>
       </main>`;
     renderAvatar(document.getElementById("widgetAvatar"), settings.avatarUrl, agent.name);
-    createVoiceRuntime(agentId);
+    renderAvatar(document.getElementById("heroAvatar"), settings.avatarUrl, agent.name);
+    createVoiceRuntime(agentId, settings);
   } catch (error) {
     app.innerHTML = `<main class="embed-page"><section class="voice-widget"><div class="conversation"><p class="welcome">${escapeHtml(error.message)}</p></div></section></main>`;
   }
 }
 
-function createVoiceRuntime(agentId) {
+function createVoiceRuntime(agentId, settings) {
   const micButton = document.getElementById("micButton");
   const endButton = document.getElementById("endButton");
   const status = document.getElementById("voiceStatus");
@@ -349,6 +414,7 @@ function createVoiceRuntime(agentId) {
   let playing = false;
   let currentAudio;
   let replyReceived = false;
+  let starterPlayed = false;
 
   micButton.addEventListener("click", async () => {
     if (playing) {
@@ -360,6 +426,11 @@ function createVoiceRuntime(agentId) {
       return;
     }
     try {
+      if (!starterPlayed && settings.starterAudioUrl) {
+        starterPlayed = true;
+        setStatus("Assistant is welcoming you...");
+        await playStandaloneAudio(settings.starterAudioUrl);
+      }
       await start();
     } catch (error) {
       setStatus(error.message);
@@ -558,6 +629,15 @@ function createVoiceRuntime(agentId) {
     row.appendChild(bubble);
     conversation.appendChild(row);
     conversation.scrollTop = conversation.scrollHeight;
+  }
+
+  function playStandaloneAudio(url) {
+    return new Promise((resolve) => {
+      const audio = new Audio(url);
+      audio.onended = resolve;
+      audio.onerror = resolve;
+      audio.play().catch(resolve);
+    });
   }
 }
 
