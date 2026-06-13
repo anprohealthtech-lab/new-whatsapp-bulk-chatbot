@@ -31,7 +31,8 @@ export async function transcribeSpeech(input: SpeechToTextInput): Promise<string
       sampleRate: input.sampleRate,
       mimeType: input.mimeType,
       sessionId: input.context.sessionId,
-      callerId: input.context.callerId
+      callerId: input.context.callerId,
+      language: stringSetting(credential?.settings, "language")
     })
   });
 
@@ -59,6 +60,8 @@ async function transcribeWithOpenAI(
   const form = new FormData();
   form.append("model", model);
   form.append("response_format", "json");
+  const language = stringSetting(credential?.settings, "language");
+  if (language && language !== "auto") form.append("language", language);
   form.append("file", audio.blob, audio.filename);
 
   const response = await fetch(url, {

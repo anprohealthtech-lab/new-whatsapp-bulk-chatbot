@@ -42,6 +42,10 @@ Sign in at the voice-service root URL, select an existing voice agent, upload it
 
 Website visitors receive a short-lived, agent-scoped browser token. Organization and user IDs are not entered or exposed in the widget.
 
+## Languages
+
+OpenAI transcription uses automatic language detection by default. A tenant STT credential may set `settings.language` to an ISO-639-1 code such as `hi`, `en`, or `es` when a fixed hint is preferred. Voice agents default to `languageMode=match_speaker`, which instructs the main agent to answer in the language used by the visitor. Fish Audio output depends on the selected model and cloned voice supporting that language.
+
 ## Architecture
 
 ```text

@@ -165,9 +165,9 @@ export async function processUtteranceStreaming(
     callbacks.onAudioChunk?.(audio, text, index);
   };
 
-  const fillerTask = config.ENABLE_VOICE_FILLER
+  const fillerText = buildVoiceFiller(transcript);
+  const fillerTask = config.ENABLE_VOICE_FILLER && fillerText
     ? (async () => {
-      const fillerText = buildVoiceFiller(transcript);
       try {
         console.log(`[voice] Filler TTS: "${fillerText}"`);
         const audio = await synthesizeSpeech({
@@ -282,8 +282,9 @@ export async function processUtteranceStreaming(
   });
 }
 
-function buildVoiceFiller(transcript: string): string {
+function buildVoiceFiller(transcript: string): string | null {
   const normalized = transcript.trim().replace(/[?.!,]+$/g, "");
+  if (!isLikelyEnglish(normalized)) return null;
   const lower = normalized.toLowerCase();
 
   if (/\b(appointment|book|schedule|slot|visit|consultation)\b/.test(lower)) {
@@ -308,6 +309,18 @@ function buildVoiceFiller(transcript: string): string {
   }
 
   return "Okay, let me check that for you.";
+}
+
+function isLikelyEnglish(text: string): boolean {
+  if (!/^[\x00-\x7F\s]+$/.test(text)) return false;
+  const words = text.toLowerCase().match(/[a-z]+/g) || [];
+  if (!words.length) return false;
+  const commonEnglish = new Set([
+    "a", "an", "and", "are", "can", "do", "for", "hello", "help", "how", "i",
+    "is", "my", "need", "of", "please", "the", "to", "want", "what", "when", "where", "with", "you",
+  ]);
+  const matches = words.filter((word) => commonEnglish.has(word)).length;
+  return matches >= 2 && matches / words.length >= 0.25;
 }
 
 export function combineAudioOutputs(outputs: TextToSpeechOutput[]): TextToSpeechOutput | null {
