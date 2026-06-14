@@ -74,9 +74,10 @@ async function synthesizeWithFishAudio(
   const topP = numberSetting(profile?.settings, "topP", config.FISH_AUDIO_TOP_P);
   const speed = numberSetting(profile?.settings, "speed", config.FISH_AUDIO_SPEED);
   const volume = numberSetting(profile?.settings, "volume", config.FISH_AUDIO_VOLUME);
-  const sampleRate = input.context.preferredSampleRate ||
+  const requestedSampleRate = input.context.preferredSampleRate ||
     optionalNumberSetting(profile?.settings, "sampleRate") ||
     config.FISH_AUDIO_SAMPLE_RATE;
+  const sampleRate = normalizeFishSampleRate(format, requestedSampleRate);
   const bitrate = numberSetting(profile?.settings, "mp3Bitrate", config.FISH_AUDIO_MP3_BITRATE);
   const latency = stringSetting(profile?.settings, "latency") || config.FISH_AUDIO_LATENCY;
 
@@ -152,6 +153,13 @@ function numberSetting(
   fallback: number
 ): number {
   return optionalNumberSetting(settings, key) ?? fallback;
+}
+
+function normalizeFishSampleRate(format: string, sampleRate?: number): number | undefined {
+  if (format === "mp3") {
+    return sampleRate === 32000 || sampleRate === 44100 ? sampleRate : 32000;
+  }
+  return sampleRate;
 }
 
 function getMimeType(format: string): string {
