@@ -169,32 +169,30 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
           {
             onFirstAudio: (audio, sentence) => {
               sendStatus(ws, "First audio ready", "tts", Date.now() - requestStartedAt, "first sentence");
-              const audioBase64 = audio.audioBase64;
-              const audioUrl = audio.audioUrl;
-              const mimeType = audio.mimeType || "audio/mpeg";
+              const playable = prepareBrowserAudio(audio, effectiveContext.preferredSampleRate || 16000);
               ws.send(JSON.stringify({
                 type: "audio_chunk",
-                audioBase64,
-                audioUrl,
-                mimeType,
+                ...playable,
                 sentence,
                 index: 0
               }));
-              audioChunks.push({ audioBase64: audioBase64 || "", mimeType });
+              audioChunks.push({
+                audioBase64: playable.audioBase64 || "",
+                mimeType: playable.mimeType,
+              });
             },
             onAudioChunk: (audio, sentence, index) => {
-              const audioBase64 = audio.audioBase64;
-              const audioUrl = audio.audioUrl;
-              const mimeType = audio.mimeType || "audio/mpeg";
+              const playable = prepareBrowserAudio(audio, effectiveContext.preferredSampleRate || 16000);
               ws.send(JSON.stringify({
                 type: "audio_chunk",
-                audioBase64,
-                audioUrl,
-                mimeType,
+                ...playable,
                 sentence,
                 index
               }));
-              audioChunks.push({ audioBase64: audioBase64 || "", mimeType });
+              audioChunks.push({
+                audioBase64: playable.audioBase64 || "",
+                mimeType: playable.mimeType,
+              });
             },
             onStage: (event) => {
               const statusText = formatStageStatus(event.stage, event.status);
@@ -234,14 +232,13 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
         }
 
         sendStatus(ws, "Sending reply", "reply", Date.now() - requestStartedAt);
+        const playable = prepareBrowserAudio(result.speech, effectiveContext.preferredSampleRate || 16000);
         ws.send(
           JSON.stringify({
             type: "reply",
             transcript: result.transcript,
             text: result.reply.text,
-            audioBase64: result.speech.audioBase64,
-            audioUrl: result.speech.audioUrl,
-            mimeType: result.speech.mimeType
+            ...playable,
           })
         );
       }
@@ -257,6 +254,49 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
       );
     }
   });
+}
+
+function prepareBrowserAudio(
+  audio: { audioBase64?: string; audioUrl?: string; mimeType?: string },
+  sampleRate: number,
+): { audioBase64?: string; audioUrl?: string; mimeType: string } {
+  const mimeType = audio.mimeType || "audio/mpeg";
+  if (!audio.audioBase64 || (!/^audio\/l16(?:;|$)/i.test(mimeType) && !/^audio\/pcm(?:;|$)/i.test(mimeType))) {
+    return {
+      audioBase64: audio.audioBase64,
+      audioUrl: audio.audioUrl,
+      mimeType,
+    };
+  }
+
+  const pcm = Buffer.from(audio.audioBase64, "base64");
+  const wav = wrapPcm16LeAsWav(pcm, sampleRate);
+  console.log(`[voice][browser] wrapped ${pcm.length} PCM bytes as playable WAV`);
+  return {
+    audioBase64: wav.toString("base64"),
+    mimeType: "audio/wav",
+  };
+}
+
+function wrapPcm16LeAsWav(pcm: Buffer, sampleRate: number): Buffer {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  header.writeUInt16LE(channels * bytesPerSample, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
 function flowCallbacks(ws: WebSocket) {
