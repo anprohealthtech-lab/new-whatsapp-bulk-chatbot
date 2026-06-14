@@ -134,7 +134,7 @@ async function renderDashboard(user, token) {
   });
 
   try {
-    const agents = await api("/api/portal/agents", { token });
+    const agents = await loadOrCreatePortalAgents(token);
     const showPage = (page, updateHash = true) => {
       const safePage = ["studio", "agents", "install"].includes(page) ? page : "studio";
       document.querySelectorAll("[data-page]").forEach((button) => {
@@ -155,6 +155,33 @@ async function renderDashboard(user, token) {
     document.getElementById("studioContent").innerHTML =
       `<h2>Unable to load voice agents</h2><p class="subtle">${escapeHtml(error.message)}</p>`;
   }
+}
+
+async function loadOrCreatePortalAgents(token) {
+  const agents = await api("/api/portal/agents", { token });
+  if (agents.length) return agents;
+
+  let ragAgentId;
+  try {
+    const ragAgents = await api("/api/portal/rag-agents", { token });
+    ragAgentId = ragAgents.find((agent) => agent.isActive === "true" || agent.isActive === true)?.id;
+  } catch {
+    // A default voice widget can still run without a saved RAG agent.
+  }
+
+  const defaultAgent = await api("/api/portal/agents", {
+    method: "POST",
+    token,
+    body: {
+      name: "Default Voice Assistant",
+      languageMode: "match_speaker",
+      responseMode: "voice",
+      ...(ragAgentId ? { ragAgentId } : {}),
+      widgetSettings: DEFAULT_WIDGET,
+    },
+  });
+  showToast("Default voice assistant is ready.");
+  return [defaultAgent];
 }
 
 function renderPageHeading(page) {
@@ -513,6 +540,10 @@ async function renderEmbed(agentId) {
           <header class="widget-head">
             <div id="widgetAvatar" class="widget-avatar"></div>
             <div class="widget-title"><strong>${escapeHtml(settings.title)}</strong><span>Online and ready</span></div>
+            <button id="downloadResponse" class="widget-download" type="button"
+              title="Save the latest response as PDF" aria-label="Save the latest response as PDF" hidden>
+              ${downloadIcon()}<span>PDF</span>
+            </button>
           </header>
           <div id="conversation" class="conversation">
             <div class="widget-hero">
@@ -543,6 +574,7 @@ function createVoiceRuntime(agentId, settings) {
   const endButton = document.getElementById("endButton");
   const status = document.getElementById("voiceStatus");
   const conversation = document.getElementById("conversation");
+  const downloadResponse = document.getElementById("downloadResponse");
   let ws;
   let mediaRecorder;
   let audioContext;
@@ -560,6 +592,11 @@ function createVoiceRuntime(agentId, settings) {
   let currentAudio;
   let replyReceived = false;
   let starterPlayed = false;
+  let latestExchange = null;
+
+  downloadResponse.addEventListener("click", () => {
+    if (latestExchange) openResponsePdf(settings.title, latestExchange);
+  });
 
   micButton.addEventListener("click", async () => {
     if (playing) {
@@ -607,6 +644,8 @@ function createVoiceRuntime(agentId, settings) {
         replyReceived = true;
         addMessage("user", message.transcript);
         addMessage("agent", message.text);
+        latestExchange = { question: message.transcript, answer: message.text };
+        downloadResponse.hidden = false;
         if (!message.streaming) enqueueAudio(message);
         else if (!playing && !playbackQueue.length) finishTurn();
       }
@@ -770,7 +809,12 @@ function createVoiceRuntime(agentId, settings) {
     row.className = `message ${role === "user" ? "user" : ""}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = text;
+    if (role === "agent") {
+      bubble.classList.add("markdown");
+      bubble.innerHTML = markdownToSafeHtml(text);
+    } else {
+      bubble.textContent = text;
+    }
     row.appendChild(bubble);
     conversation.appendChild(row);
     conversation.scrollTop = conversation.scrollHeight;
@@ -884,7 +928,108 @@ function escapeHtml(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
   })[character]);
 }
+function markdownToSafeHtml(value) {
+  const lines = String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/([^\n])\s+(#{1,6})\s+/g, "$1\n$2 ")
+    .split("\n");
+  const output = [];
+  let activeList = "";
+  const closeList = () => {
+    if (!activeList) return;
+    output.push(`</${activeList}>`);
+    activeList = "";
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(heading[1].length + 2, 5);
+      output.push(`<h${level}>${formatInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const unordered = line.match(/^[-+*]\s+(.+)$/);
+    if (unordered) {
+      if (activeList !== "ul") {
+        closeList();
+        activeList = "ul";
+        output.push("<ul>");
+      }
+      output.push(`<li>${formatInlineMarkdown(unordered[1])}</li>`);
+      continue;
+    }
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      if (activeList !== "ol") {
+        closeList();
+        activeList = "ol";
+        output.push("<ol>");
+      }
+      output.push(`<li>${formatInlineMarkdown(ordered[1])}</li>`);
+      continue;
+    }
+    closeList();
+    output.push(`<p>${formatInlineMarkdown(line)}</p>`);
+  }
+  closeList();
+  return output.join("");
+}
+function formatInlineMarkdown(value) {
+  const labelsOnly = String(value ?? "")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  return escapeHtml(labelsOnly)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.+?)__/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/_([^_\n]+)_/g, "<em>$1</em>");
+}
+function openResponsePdf(assistantTitle, exchange) {
+  const printWindow = window.open("", "_blank", "width=860,height=720");
+  if (!printWindow) {
+    showToast("Allow pop-ups to save this response as PDF.");
+    return;
+  }
+  printWindow.opener = null;
+  printWindow.document.write(`<!doctype html>
+    <html><head><meta charset="utf-8" />
+      <title>${escapeHtml(assistantTitle)} response</title>
+      <style>
+        @page { margin: 18mm; }
+        body { color: #172033; font: 15px/1.55 Arial, sans-serif; margin: 0; }
+        header { border-bottom: 2px solid #6d5dfc; margin-bottom: 24px; padding-bottom: 14px; }
+        h1 { font-size: 22px; margin: 0 0 4px; }
+        .date { color: #667085; font-size: 12px; }
+        .question { background: #f1efff; border-radius: 10px; margin-bottom: 22px; padding: 12px 14px; }
+        .label { color: #667085; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        h3, h4, h5 { break-after: avoid; margin: 18px 0 7px; }
+        p { margin: 0 0 10px; }
+        ul, ol { margin: 6px 0 14px; padding-left: 24px; }
+        li { margin: 4px 0; }
+        code { background: #f2f4f7; border-radius: 3px; padding: 1px 4px; }
+      </style>
+    </head><body>
+      <header><h1>${escapeHtml(assistantTitle)}</h1><div class="date">${escapeHtml(new Date().toLocaleString())}</div></header>
+      <div class="label">Question</div>
+      <div class="question">${escapeHtml(exchange.question)}</div>
+      <div class="label">Response</div>
+      <main>${markdownToSafeHtml(exchange.answer)}</main>
+    </body></html>`);
+  printWindow.document.close();
+  window.setTimeout(() => {
+    printWindow.focus();
+    printWindow.print();
+  }, 250);
+}
 function waveIcon() { return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13v-2M8 17V7m4 13V4m4 13V7m4 6v-2" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg>`; }
+function downloadIcon() { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg>`; }
 function micSvg() { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.92V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.58A6 6 0 0 0 18 11.5Z"/></svg>`; }
 function micIcon() { return `<span>${micSvg()}</span>`; }
 function gridIcon() { return `<span>◫</span>`; }

@@ -13,6 +13,8 @@ const publicTokenRequests = new Map<string, { count: number; resetAt: number }>(
 portalRouter.post("/api/portal/login", (req, res) => proxyJson(req, res, "/api/auth/login"));
 portalRouter.get("/api/portal/me", (req, res) => proxyJson(req, res, "/api/auth/me"));
 portalRouter.get("/api/portal/agents", (req, res) => proxyJson(req, res, "/api/voice/agents"));
+portalRouter.post("/api/portal/agents", (req, res) => proxyJson(req, res, "/api/voice/agents"));
+portalRouter.get("/api/portal/rag-agents", (req, res) => proxyJson(req, res, "/api/voice/rag-agents"));
 portalRouter.patch("/api/portal/agents/:id/widget", (req, res) =>
   proxyJson(req, res, `/api/voice/agents/${encodeURIComponent(req.params.id)}/widget`)
 );
