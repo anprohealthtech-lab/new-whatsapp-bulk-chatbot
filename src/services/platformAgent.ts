@@ -91,6 +91,7 @@ export async function askPlatformAgentStreaming(
   let buffer = "";
   let textBuffer = "";
   let fullText = "";
+  let completed = false;
   const hardBoundary = /[.!?।]/;
   const softBoundary = /[,;:]/;
   const minPhraseChars = 35;
@@ -155,10 +156,14 @@ export async function askPlatformAgentStreaming(
             // Legacy format support
             callbacks.onSentence(event.text, event.isFinal || false);
           } else if (event.type === "done") {
+            if (completed) continue;
+            completed = true;
             // Flush any remaining text as final sentence
             flushPhrase(true);
             callbacks.onDone(fullText || event.fullText || "");
           } else if (event.type === "error") {
+            if (completed) continue;
+            completed = true;
             callbacks.onError(new Error(event.message || "Unknown streaming error"));
           }
         } catch {
@@ -168,11 +173,18 @@ export async function askPlatformAgentStreaming(
     }
 
     // Handle remaining buffer after stream ends
-    flushPhrase(true);
-    if (fullText && !buffer.includes('"type":"done"')) {
+    if (!completed) flushPhrase(true);
+    if (!completed && fullText) {
+      completed = true;
       callbacks.onDone(fullText);
+    } else if (!completed) {
+      completed = true;
+      callbacks.onError(new Error("Platform agent returned an empty streaming response"));
     }
   } catch (err) {
-    callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    if (!completed) {
+      completed = true;
+      callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 }
