@@ -39,7 +39,7 @@ function renderLogin(message = "") {
   app.innerHTML = `
     <main class="login-page">
       <section class="login-art">
-        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Anpro Voice</div>
+        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Doctorpreneur Voice</div>
         <div class="hero-copy">
           <p class="eyebrow">Conversational Q&A</p>
           <h1>Give your website a voice.</h1>
@@ -101,7 +101,7 @@ async function renderDashboard(user, token) {
   app.innerHTML = `
     <main class="dashboard">
       <aside class="sidebar">
-        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Anpro Voice</div>
+        <div class="brand"><span class="brand-mark">${waveIcon()}</span> Doctorpreneur Voice</div>
         <nav>
           <p class="nav-label">Workspace</p>
           <button class="nav-item" data-page="studio">${gridIcon()} Widget studio</button>
@@ -526,7 +526,7 @@ async function renderEmbed(agentId) {
               <button id="micButton" class="mic-button talk-button" type="button" aria-label="Talk now">${micSvg()}<span>Talk now</span></button>
               <button id="endButton" class="end-button hidden" type="button">End</button>
             </div>
-            <div class="powered">Voice Q&A powered by Anpro</div>
+            <div class="powered">Voice Q&A powered by Doctorpreneur</div>
           </footer>
         </section>
       </main>`;
