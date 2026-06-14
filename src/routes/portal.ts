@@ -56,6 +56,7 @@ portalRouter.post("/api/portal/agents/:id/starter-audio", async (req, res) => {
       userId: claims.userId,
       voiceAgentId: claims.voiceAgentId,
       voiceProfileId: claims.voiceProfileId,
+      preferredAudioFormat: "mp3",
     };
     const chunk = await getOrCreateFlowAudioChunk({
       organizationId: claims.organizationId,

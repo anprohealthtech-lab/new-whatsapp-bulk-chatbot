@@ -13,7 +13,7 @@ export interface VoiceContext {
   campaignId?: string;
   contactId?: string;
   gatewayId?: string;
-  preferredAudioFormat?: "pcm";
+  preferredAudioFormat?: "mp3" | "wav" | "pcm" | "opus";
   preferredSampleRate?: number;
 }
 

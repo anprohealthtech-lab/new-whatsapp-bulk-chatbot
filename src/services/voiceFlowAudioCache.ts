@@ -77,8 +77,13 @@ export async function getOrCreateFlowAudioChunk(
     };
   }
 
-  const mimeType = speech.mimeType || "audio/mpeg";
-  const audioBuffer = Buffer.from(audioBase64, "base64");
+  const preparedAudio = prepareCacheAudio(
+    Buffer.from(audioBase64, "base64"),
+    speech.mimeType || "audio/mpeg",
+    context.preferredSampleRate || 16000,
+  );
+  const mimeType = preparedAudio.mimeType;
+  const audioBuffer = preparedAudio.buffer;
   const audioPath = buildAudioPath(key, mimeType);
   const audioUrl = await uploadToSupabaseStorage(audioPath, audioBuffer, mimeType);
   const row = await saveCachedChunk(key, audioPath, audioUrl, mimeType, audioBuffer.length);
@@ -288,6 +293,42 @@ function buildAudioPath(key: VoiceFlowCacheKey, mimeType: string): string {
     safePath(getVoiceId(key) || getVoiceProvider(key)),
     `${safePath(key.nodeId)}-${key.chunkIndex}-${hashText(key.text).slice(0, 16)}.${extension}`
   ].join("/");
+}
+
+function prepareCacheAudio(
+  buffer: Buffer,
+  mimeType: string,
+  sampleRate: number,
+): { buffer: Buffer; mimeType: string } {
+  if (!/^audio\/l16(?:;|$)/i.test(mimeType) && !/^audio\/pcm(?:;|$)/i.test(mimeType)) {
+    return { buffer, mimeType };
+  }
+
+  return {
+    buffer: wrapPcm16LeAsWav(buffer, sampleRate),
+    mimeType: "audio/wav",
+  };
+}
+
+function wrapPcm16LeAsWav(pcm: Buffer, sampleRate: number): Buffer {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  header.writeUInt16LE(channels * bytesPerSample, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
 function getVoiceProvider(key: VoiceFlowCacheKey): string {
