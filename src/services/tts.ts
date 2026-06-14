@@ -7,8 +7,13 @@ export async function synthesizeSpeech(
 ): Promise<TextToSpeechOutput> {
   const runtimeAgent = await getRuntimeVoiceAgent(input.context);
   const profile = runtimeAgent?.voiceProfile;
-  const provider = profile?.provider || config.TTS_PROVIDER;
-  console.log(`[voice] Synthesizing speech with provider=${provider}`);
+  const hasEnvironmentFishVoice = Boolean(
+    config.FISH_AUDIO_API_KEY &&
+    config.FISH_AUDIO_REFERENCE_ID,
+  );
+  const provider = profile?.provider || (hasEnvironmentFishVoice ? "fish" : config.TTS_PROVIDER);
+  const source = profile ? `tenant profile ${profile.id}` : hasEnvironmentFishVoice ? "Fish environment fallback" : "configured fallback";
+  console.log(`[voice] Synthesizing speech with provider=${provider} source=${source}`);
 
   if (provider === "fish") {
     return synthesizeWithFishAudio(input, profile);
@@ -76,10 +81,10 @@ async function synthesizeWithFishAudio(
   const latency = stringSetting(profile?.settings, "latency") || config.FISH_AUDIO_LATENCY;
 
   if (!apiKey) {
-    throw new Error("FISH_AUDIO_API_KEY is required when TTS_PROVIDER=fish");
+    throw new Error("FISH_AUDIO_API_KEY is required for Fish Audio fallback");
   }
   if (!referenceId) {
-    throw new Error("FISH_AUDIO_REFERENCE_ID is required when TTS_PROVIDER=fish");
+    throw new Error("FISH_AUDIO_REFERENCE_ID is required for Fish Audio fallback");
   }
 
   const response = await fetch(apiUrl, {
