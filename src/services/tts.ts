@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import type { RuntimeVoiceProfile, TextToSpeechInput, TextToSpeechOutput } from "../types.js";
+import { sanitizeTextForSpeech } from "./speechText.js";
 import { getRuntimeVoiceAgent } from "./tenantVoiceRepository.js";
 
 export async function synthesizeSpeech(
@@ -155,23 +156,6 @@ function numberSetting(
   fallback: number
 ): number {
   return optionalNumberSetting(settings, key) ?? fallback;
-}
-
-export function sanitizeTextForSpeech(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-z0-9_-]*\n?/gi, "").replace(/```/g, ""))
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*\d+[.)]\s+/gm, "")
-    .replace(/(\*\*|__)(.*?)\1/g, "$2")
-    .replace(/(?<!\w)([*_~])([^*_\n~]+)\1(?!\w)/g, "$2")
-    .replace(/[*_~]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function normalizeFishSampleRate(format: string, sampleRate?: number): number | undefined {
