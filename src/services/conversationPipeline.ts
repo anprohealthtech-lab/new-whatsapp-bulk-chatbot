@@ -284,8 +284,12 @@ export async function processUtteranceStreaming(
 
 function buildVoiceFiller(transcript: string): string | null {
   const normalized = transcript.trim().replace(/[?.!,]+$/g, "");
-  if (!isLikelyEnglish(normalized)) return null;
   const lower = normalized.toLowerCase();
+  const aboutMatch = lower.match(/\b(?:symptoms? of|causes? of|treatments? for|what is|what are)\s+(.{3,60})/);
+  if (aboutMatch?.[1] && /^[\x00-\x7F\s]+$/.test(normalized)) {
+    return `Okay, let me check ${aboutMatch[1].trim()} for you.`;
+  }
+  if (!isLikelyEnglish(normalized)) return null;
 
   if (/\b(appointment|book|schedule|slot|visit|consultation)\b/.test(lower)) {
     return "Sure, I will check appointment options.";
@@ -301,11 +305,6 @@ function buildVoiceFiller(transcript: string): string | null {
 
   if (/\b(location|address|where|timing|time|hours|open|closed|available|availability)\b/.test(lower)) {
     return "Okay, I will check availability and timing.";
-  }
-
-  const aboutMatch = lower.match(/\b(?:symptoms of|causes of|treatment for|what is|what are)\s+(.{3,60})/);
-  if (aboutMatch?.[1]) {
-    return `Okay, let me check ${aboutMatch[1].trim()} for you.`;
   }
 
   return "Okay, let me check that for you.";

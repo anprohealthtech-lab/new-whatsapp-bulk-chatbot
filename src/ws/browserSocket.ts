@@ -54,7 +54,9 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
         flowId: claims.flowId,
         flowVersion: claims.flowVersion,
         voiceProfileId: claims.voiceProfileId,
-        ...(isGateway ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 } : {})
+        ...(isGateway
+          ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 }
+          : { preferredAudioFormat: "mp3" as const })
       } : {
         channel: "browser",
         sessionId: message.sessionId || crypto.randomUUID(),
@@ -64,7 +66,9 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
         flowId: message.flowId,
         flowVersion: message.flowVersion,
         voiceProfileId: message.voiceProfileId,
-        ...(isGateway ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 } : {})
+        ...(isGateway
+          ? { preferredAudioFormat: "pcm" as const, preferredSampleRate: 16000 }
+          : { preferredAudioFormat: "mp3" as const })
       };
       bufferedContext = context;
       bufferedMimeType = message.mimeType || bufferedMimeType;
