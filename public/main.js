@@ -104,9 +104,9 @@ async function renderDashboard(user, token) {
         <div class="brand"><span class="brand-mark">${waveIcon()}</span> Anpro Voice</div>
         <nav>
           <p class="nav-label">Workspace</p>
-          <button class="nav-item active">${gridIcon()} Widget studio</button>
-          <button class="nav-item">${micIcon()} Voice agents</button>
-          <button class="nav-item">${codeIcon()} Install guide</button>
+          <button class="nav-item" data-page="studio">${gridIcon()} Widget studio</button>
+          <button class="nav-item" data-page="agents">${micIcon()} Voice agents</button>
+          <button class="nav-item" data-page="install">${codeIcon()} Install guide</button>
         </nav>
         <div class="sidebar-footer">
           <div class="user-pill">
@@ -118,7 +118,7 @@ async function renderDashboard(user, token) {
       </aside>
       <section class="dashboard-main">
         <header class="topbar">
-          <div>
+          <div id="pageHeading">
             <p class="eyebrow">Website assistant</p>
             <h1>Voice Q&A widget</h1>
             <p class="subtle">Brand your assistant, test the conversation, then add it to any website.</p>
@@ -135,11 +135,156 @@ async function renderDashboard(user, token) {
 
   try {
     const agents = await api("/api/portal/agents", { token });
-    renderStudio(agents, token);
+    const showPage = (page, updateHash = true) => {
+      const safePage = ["studio", "agents", "install"].includes(page) ? page : "studio";
+      document.querySelectorAll("[data-page]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.page === safePage);
+      });
+      renderPageHeading(safePage);
+      if (safePage === "agents") renderAgentsPage(agents, token, showPage);
+      else if (safePage === "install") renderInstallGuide(agents);
+      else renderStudio(agents, token);
+      if (updateHash && location.hash !== `#${safePage}`) history.pushState(null, "", `#${safePage}`);
+    };
+    document.querySelectorAll("[data-page]").forEach((button) => {
+      button.addEventListener("click", () => showPage(button.dataset.page));
+    });
+    window.onpopstate = () => showPage(location.hash.slice(1), false);
+    showPage(location.hash.slice(1) || "studio", false);
   } catch (error) {
     document.getElementById("studioContent").innerHTML =
       `<h2>Unable to load voice agents</h2><p class="subtle">${escapeHtml(error.message)}</p>`;
   }
+}
+
+function renderPageHeading(page) {
+  const headings = {
+    studio: {
+      eyebrow: "Website assistant",
+      title: "Voice Q&A widget",
+      description: "Brand your assistant, test the conversation, then add it to any website.",
+    },
+    agents: {
+      eyebrow: "Workspace",
+      title: "Voice agents",
+      description: "Review the voice assistants linked to this user and organization.",
+    },
+    install: {
+      eyebrow: "Website setup",
+      title: "Install guide",
+      description: "Choose an assistant and add the secure voice widget to your website.",
+    },
+  };
+  const heading = headings[page] || headings.studio;
+  document.getElementById("pageHeading").innerHTML = `
+    <p class="eyebrow">${heading.eyebrow}</p>
+    <h1>${heading.title}</h1>
+    <p class="subtle">${heading.description}</p>`;
+}
+
+function renderAgentsPage(agents, token, showPage) {
+  const host = document.getElementById("studioContent");
+  host.className = "";
+  if (!agents.length) {
+    host.innerHTML = `
+      <section class="card empty-state">
+        <div class="empty-icon">${micSvg()}</div>
+        <h2>No voice agents yet</h2>
+        <p class="subtle">Create a voice agent in the main platform. It will appear here for this linked tenant.</p>
+      </section>`;
+    return;
+  }
+
+  host.innerHTML = `
+    <section class="agent-grid">
+      ${agents.map((agent) => {
+        const settings = normalizeWidget(agent.widgetSettings);
+        return `
+          <article class="card agent-card">
+            <div class="agent-card-head">
+              <div class="agent-avatar" data-agent-avatar="${escapeHtml(agent.id)}"></div>
+              <span class="agent-status ${agent.status === "active" ? "active" : ""}">${escapeHtml(agent.status || "unknown")}</span>
+            </div>
+            <h2>${escapeHtml(agent.name)}</h2>
+            <p class="subtle agent-description">${escapeHtml(settings.title)}</p>
+            <dl class="agent-meta">
+              <div><dt>Language</dt><dd>${escapeHtml(formatLabel(agent.languageMode || "match_speaker"))}</dd></div>
+              <div><dt>Response</dt><dd>${escapeHtml(formatLabel(agent.responseMode || "voice"))}</dd></div>
+              <div><dt>Starter voice</dt><dd>${settings.starterAudioUrl ? "Ready" : "Not generated"}</dd></div>
+            </dl>
+            <button class="secondary agent-edit" data-agent-id="${escapeHtml(agent.id)}">Open in Widget studio</button>
+          </article>`;
+      }).join("")}
+    </section>`;
+
+  agents.forEach((agent) => {
+    renderAvatar(
+      host.querySelector(`[data-agent-avatar="${cssEscape(agent.id)}"]`),
+      normalizeWidget(agent.widgetSettings).avatarUrl,
+      agent.name,
+    );
+  });
+  host.querySelectorAll(".agent-edit").forEach((button) => {
+    button.addEventListener("click", () => {
+      showPage("studio");
+      const select = document.getElementById("agentSelect");
+      if (select) {
+        select.value = button.dataset.agentId;
+        select.dispatchEvent(new Event("change"));
+      }
+    });
+  });
+}
+
+function renderInstallGuide(agents) {
+  const host = document.getElementById("studioContent");
+  host.className = "";
+  if (!agents.length) {
+    host.innerHTML = `
+      <section class="card empty-state">
+        <h2>Create a voice agent first</h2>
+        <p class="subtle">An agent is required before an embed code can be generated.</p>
+      </section>`;
+    return;
+  }
+
+  host.innerHTML = `
+    <div class="install-layout">
+      <section class="card">
+        <p class="step-number">Step 1</p>
+        <h2>Choose the assistant</h2>
+        <div class="field install-agent-field">
+          <label for="installAgentSelect">Voice agent</label>
+          <select id="installAgentSelect">
+            ${agents.map((agent) => `<option value="${agent.id}">${escapeHtml(agent.name)}</option>`).join("")}
+          </select>
+        </div>
+        <p class="step-number">Step 2</p>
+        <h2>Paste the script</h2>
+        <p class="subtle">Add this once before the closing <code>&lt;/body&gt;</code> tag on the pages where the voice assistant should appear.</p>
+        <div class="embed-code install-code"><span id="installEmbedCode"></span><button id="copyInstallEmbed" class="copy-mini" title="Copy embed code">${copyIcon()}</button></div>
+      </section>
+      <section class="card guide-card">
+        <p class="step-number">Step 3</p>
+        <h2>Verify the widget</h2>
+        <div class="guide-check"><span>1</span><p>Open the website over HTTPS so microphone permission is available.</p></div>
+        <div class="guide-check"><span>2</span><p>Select <strong>Talk now</strong> and allow microphone access when prompted.</p></div>
+        <div class="guide-check"><span>3</span><p>Ask a question from the agent's knowledge base and confirm the spoken reply.</p></div>
+        <div class="guide-note">Session tokens are created automatically and expire after 10 minutes. Do not put organization IDs, user IDs, or secrets in the embed code.</div>
+      </section>
+    </div>`;
+
+  const select = document.getElementById("installAgentSelect");
+  const refreshCode = () => {
+    document.getElementById("installEmbedCode").textContent =
+      `<script src="${location.origin}/embed.js" data-agent-id="${select.value}" async></scr` + `ipt>`;
+  };
+  select.addEventListener("change", refreshCode);
+  document.getElementById("copyInstallEmbed").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(document.getElementById("installEmbedCode").textContent);
+    showToast("Embed code copied.");
+  });
+  refreshCode();
 }
 
 function renderStudio(agents, token) {
@@ -701,6 +846,8 @@ function setAccent(hex) {
   document.documentElement.style.setProperty("--accent-rgb", rgb.join(","));
 }
 function initials(name) { return String(name || "AI").split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
+function formatLabel(value) { return String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function cssEscape(value) { return globalThis.CSS?.escape ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, "\\$&"); }
 function clearAuth() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); }
 function showToast(text) {
   document.querySelector(".toast")?.remove();
