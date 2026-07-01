@@ -143,7 +143,7 @@ export class FlowRunner {
     };
     const phrases = splitIntoVoicePhrases(text);
     const chunks = await Promise.all(phrases.map(async (phrase, chunkIndex) => {
-      if (isVoiceCacheConfigured()) {
+      if (isVoiceCacheConfigured() && runtimeContext.preferredAudioFormat !== "pcm") {
         return getOrCreateFlowAudioChunk({
           organizationId: context.organizationId,
           userId: context.userId,
