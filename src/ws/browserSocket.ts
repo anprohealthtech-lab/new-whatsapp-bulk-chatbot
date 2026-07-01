@@ -144,6 +144,12 @@ export function handleBrowserSocket(ws: WebSocket, isGateway = false): void {
           context: effectiveContext
         });
         console.log(`[voice][gateway] transcript session=${effectiveContext.sessionId} chars=${transcript.length}`);
+        if (!transcript.trim()) {
+          sendStatus(ws, "No speech detected", "stt", Date.now() - requestStartedAt);
+          flowWaitingForInput = true;
+          ws.send(JSON.stringify({ type: "flow_listen", nodeId: resultCurrentListenNode(flowRunner) }));
+          return;
+        }
         ws.send(JSON.stringify({ type: "flow_transcript", transcript }));
         const result = await flowRunner.handleUserText(transcript, effectiveContext, flowCallbacks(ws));
         flowWaitingForInput = result.status === "listening";
@@ -315,6 +321,10 @@ function flowCallbacks(ws: WebSocket) {
       sendStatus(ws, status, "flow", undefined, detail);
     }
   };
+}
+
+function resultCurrentListenNode(flowRunner: FlowRunner): string {
+  return (flowRunner as unknown as { currentNodeId?: string }).currentNodeId || "listen";
 }
 
 function sendStatus(
